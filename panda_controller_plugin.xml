@@ -1,0 +1,9 @@
+<library path="lib/libfranka_effort_controller">
+  <class name="franka_effort_controller/JointImpedanceController"
+         type="franka_effort_controller::JointImpedanceController"
+         base_class_type="controller_interface::ControllerBase">
+    <description>
+      Joint impedance controller for Franka 
+    </description>
+  </class>
+</library>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+
+  <arg name="arm_id"      default="panda" doc="Name of the panda robot to spawn" />
+  <arg name="use_gripper" default="true"  doc="Should a franka hand be mounted on the flange?" />
+  <arg name="controller"  default=" "     doc="Which example controller should be started? (One of {cartesian_impedance,model,force,joint_position,joint_velocity}_example_controller)" />
+  <arg name="x"           default="0"     doc="How far forward to place the base of the robot in [m]?" />
+  <arg name="y"           default="0"     doc="How far leftwards to place the base of the robot in [m]?" />
+  <arg name="z"           default="0"     doc="How far upwards to place the base of the robot in [m]?" />
+  <arg name="roll"        default="0"     doc="How much to rotate the base of the robot around its X-axis in [rad]?" />
+  <arg name="pitch"       default="0"     doc="How much to rotate the base of the robot around its Y-axis in [rad]?" />
+  <arg name="yaw"         default="0"     doc="How much to rotate the base of the robot around its Z-axis in [rad]?" />
+
+  <arg name="initial_joint_positions"
+       doc="Initial joint configuration of the panda. Specify as a list of name/value pairs in form of '-J [name-of-joint] [value-in-rad]'. Default is a 90 degree bend in the elbow"
+       default="-J $(arg arm_id)_joint1 0
+                -J $(arg arm_id)_joint2 -0.785398163
+                -J $(arg arm_id)_joint3 0
+                -J $(arg arm_id)_joint4 0
+                -J $(arg arm_id)_joint5 0
+                -J $(arg arm_id)_joint6 0
+                -J $(arg arm_id)_joint7 0
+                -J $(arg arm_id)_finger_joint1 0.001
+                -J $(arg arm_id)_finger_joint2 0.001"
+       />
+
+  <param name="robot_description" command="cat /home/crrl/catkin_ws/src/panda_controller/urdf/franka.urdf" />
+  <node name="urdf_spawner" pkg="gazebo_ros" type="spawn_model" respawn="false" output="screen"
+    args="-urdf -x $(arg x) -y $(arg y) -z $(arg z)  -model panda -param robot_description"/>
+  <include file="$(find franka_effort_controller)/launch/control.launch"/>
+</launch>
