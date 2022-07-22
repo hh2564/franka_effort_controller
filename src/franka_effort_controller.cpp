@@ -12,7 +12,8 @@
 namespace franka_effort_controller {
     bool JointImpedanceController::init(hardware_interface::RobotHW* robot_hw,
                                            ros::NodeHandle& node_handle) {
-    //checking to see if the default parameters can be access through node handle 
+    //checking to see if the default parameters can be access through node handle
+    //and also getting information and interfaces  
     std::string arm_id;
     if (!node_handle.getParam("arm_id", arm_id)) {
         ROS_ERROR("JointImpedanceController: Could not read parameter arm_id");
@@ -52,6 +53,11 @@ namespace franka_effort_controller {
 
     }
 
+    void JointImpedanceController::starting(const ros::Time& /* time */) {
+    //getting the intial time to generate command in update 
+    elapsed_time_ = ros::Duration(0.0);
+    }
+
 
     void JointImpedanceController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
@@ -60,7 +66,13 @@ namespace franka_effort_controller {
     // for (size_t i = 0; i < 7; ++i) {
     //     joint_handles_[i].setCommand(tau_d_saturated[i]);
     // }
-    double tau_d_saturated[] {10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    // updating time 
+    elapsed_time_ += period;
+
+    //calculating torque to send command 
+    double torque = (std::cos( elapsed_time_.toSec())) * 10;
+    //sending the command to each joint by joint_handles_ 
+    double tau_d_saturated[] {torque, torque, torque, torque, torque, torque, torque};
     for (size_t i = 0; i < 7; ++i) {
         joint_handles_[i].setCommand(tau_d_saturated[i]);
     }

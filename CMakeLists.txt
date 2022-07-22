@@ -17,6 +17,9 @@ find_package(catkin REQUIRED COMPONENTS
   gazebo_ros
   geometry_msgs
   hardware_interface
+  gazebo_ros
+  geometry_msgs
+  hardware_interface
   joint_limits_interface
   joint_state_publisher
   message_generation
