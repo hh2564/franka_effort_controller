@@ -28,7 +28,7 @@ public:
     void update(const ros::Time&, const ros::Duration& period) override;
 
 private: 
-    std::array<double, 7> saturateTorqueRate(
+    Eigen::Matrix<double, 7, 1> saturateTorqueRate(
         const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
         const Eigen::Matrix<double, 7, 1>& tau_J_d);  // NOLINT (readability-identifier-naming)
 
@@ -48,8 +48,10 @@ private:
     std::array<double, 7> dq_filtered_;
     ros::Duration elapsed_time_;
     std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;
-    franka::RobotState initial_state;
+    franka::RobotState cur_state;
     std::array<double, 16> robot_pose_;
+    const double delta_tau_max_{1.0};
+    const double tol{5e-3};
     
 
 };

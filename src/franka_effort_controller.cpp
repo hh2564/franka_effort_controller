@@ -89,7 +89,6 @@ namespace franka_effort_controller {
 
     void JointImpedanceController::starting(const ros::Time& /* time */) {
     //getting the intial time to generate command in update 
-    initial_state = state_handle_->getRobotState();
     elapsed_time_ = ros::Duration(0.0);
 
 
@@ -101,53 +100,44 @@ namespace franka_effort_controller {
 
     void JointImpedanceController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
-
-    if (vel_current_ < vel_max_) {
-        vel_current_ += period.toSec() * std::fabs(vel_max_ / acceleration_time_);
-    }
-    vel_current_ = std::fmin(vel_current_, vel_max_);
-
-    angle_ += period.toSec() * vel_current_ / std::fabs(radius_);
-    if (angle_ > 2 * M_PI) {
-        angle_ -= 2 * M_PI;
-    }
-
-    // double delta_y = radius_ * (1 - std::cos(angle_));
-    // double delta_z = radius_ * std::sin(angle_);
-
-    // std::array<double, 16> pose_desired = initial_pose_;
-    // pose_desired[13] += delta_y;
-    // pose_desired[14] += delta_z;
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
-    std::array<double, 21> position_jacobian_array; 
-    for (int i = 0; i < 20; i++)
-    {
-        position_jacobian_array[i] = jacobian_array[i];
-    }
+    cur_state = state_handle_->getRobotState();
+    Eigen::Map<Eigen::Matrix<double, 6, 7>> raw_jacobian(jacobian_array.data());
+    Eigen::Matrix<double, 3, 7> jacobian(raw_jacobian.block<3,7>(0,0));
     franka::RobotState robot_state = state_handle_->getRobotState();
-    Eigen::Map<Eigen::Matrix<double, 3, 7>> jacobian(position_jacobian_array.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
     Eigen::DiagonalMatrix<double, 3>  kp(0.5, 1.0, 0.5);
     Eigen::DiagonalMatrix<double, 3>  kd(0.5, 0.5, 0.5);
-    Eigen::Matrix<double, 3, 1> desired_pos(0.5,0.5,0.5);
-    std::array<double, 16> robot_pose_ = initial_state.O_T_EE;
+    Eigen::Matrix<double, 3, 1> desired_pos(0.3,0.3,0.3);
+    std::array<double, 16> robot_pose_ = cur_state.O_T_EE;
     Eigen::Matrix<double, 3, 1> q(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
     Eigen::Matrix<double, 3, 1> q_diff(desired_pos-q);
     Eigen::Matrix<double, 3, 1> delta_dq(jacobian*dq);
     Eigen::Matrix<double, 3, 1> F = kp*q_diff-kd*delta_dq;
     Eigen::Matrix<double, 7, 1> TF = jacobian.transpose()*F;
-
+    
     
     
     std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
+    std::array<double, 7> gravity_array = model_handle_->getGravity();
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(  // NOLINT (readability-identifier-naming)
       robot_state.tau_J_d.data());
 
     Eigen::VectorXd tau_d(7);
 
-    tau_d << TF + coriolis;
+    //  tau_d << saturateTorqueRate(tau_d, tau_J_d);
+
+    if (q_diff.norm()< tol) {
+        tau_d << coriolis-20*dq;
+    }
+    else {
+        tau_d << TF+coriolis;
+    }
+
+    // tau_d << coriolis-20*dq;
 
 
 
@@ -177,17 +167,17 @@ namespace franka_effort_controller {
     
 
     }
-//     std::array<double, 7> JointImpedanceController::saturateTorqueRate(
-//         const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
-//         const Eigen::Matrix<double, 7, 1>& tau_J_d) {  // NOLINT (readability-identifier-naming)
-//     Eigen::Matrix<double, 7, 1> tau_d_saturated{};
-//     for (size_t i = 0; i < 7; i++) {
-//         double difference = tau_d_calculated[i] - tau_J_d[i];
-//         tau_d_saturated[i] =
-//             tau_J_d[i] + std::max(std::min(difference, delta_tau_max_), -delta_tau_max_);
-//     }
-//     return tau_d_saturated;
-// }
+    Eigen::Matrix<double, 7, 1> JointImpedanceController::saturateTorqueRate(
+        const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
+        const Eigen::Matrix<double, 7, 1>& tau_J_d) {  // NOLINT (readability-identifier-naming)
+    Eigen::Matrix<double, 7, 1> tau_d_saturated{};
+    for (size_t i = 0; i < 7; i++) {
+        double difference = tau_d_calculated[i] - tau_J_d[i];
+        tau_d_saturated[i] =
+            tau_J_d[i] + std::max(std::min(difference, delta_tau_max_), -delta_tau_max_);
+    }
+    return tau_d_saturated;
+}
 
 }
 
