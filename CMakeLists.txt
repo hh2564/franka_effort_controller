@@ -73,6 +73,7 @@ catkin_package(
 
 add_library(franka_effort_controller
   src/franka_effort_controller.cpp
+  src/franka_feedforward_controller.cpp
 )
 
 add_dependencies(franka_effort_controller

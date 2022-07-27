@@ -104,17 +104,18 @@ namespace franka_effort_controller {
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
     cur_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 6, 7>> raw_jacobian(jacobian_array.data());
-    Eigen::Matrix<double, 3, 7> jacobian(raw_jacobian.block<3,7>(0,0));
+    Eigen::Matrix<double, 3, 7> jacobian(raw_jacobian.topRows(3));
     franka::RobotState robot_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-    Eigen::DiagonalMatrix<double, 3>  kp(0.5, 1.0, 0.5);
+    Eigen::DiagonalMatrix<double, 3>  kp(0.75, 1.5, 0.75);
     Eigen::DiagonalMatrix<double, 3>  kd(0.5, 0.5, 0.5);
-    Eigen::Matrix<double, 3, 1> desired_pos(0.3,0.3,0.3);
+    Eigen::Matrix<double, 3, 1> desired_pos(0.2,0.5,0.5);
     std::array<double, 16> robot_pose_ = cur_state.O_T_EE;
-    Eigen::Matrix<double, 3, 1> q(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
-    Eigen::Matrix<double, 3, 1> q_diff(desired_pos-q);
+    std::array<double, 7> q = robot_state.q;
+    Eigen::Matrix<double, 3, 1> pos(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
+    Eigen::Matrix<double, 3, 1> pos_diff(desired_pos-pos);
     Eigen::Matrix<double, 3, 1> delta_dq(jacobian*dq);
-    Eigen::Matrix<double, 3, 1> F = kp*q_diff-kd*delta_dq;
+    Eigen::Matrix<double, 3, 1> F = kp*pos_diff-kd*delta_dq;
     Eigen::Matrix<double, 7, 1> TF = jacobian.transpose()*F;
     
     
@@ -130,11 +131,15 @@ namespace franka_effort_controller {
 
     //  tau_d << saturateTorqueRate(tau_d, tau_J_d);
 
-    if (q_diff.norm()< tol) {
+    if (pos_diff.norm()< tol) {
         tau_d << coriolis-20*dq;
     }
     else {
-        tau_d << TF+coriolis;
+        tau_d << TF+coriolis-dq;
+        printf("%.7lf\n",robot_pose_[12]);
+        printf("%.7lf\n",robot_pose_[13]);
+        printf("%.7lf\n",robot_pose_[14]);
+        
     }
 
     // tau_d << coriolis-20*dq;

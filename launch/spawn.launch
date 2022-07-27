@@ -54,5 +54,5 @@
 
 
   
-  <include file="$(find franka_effort_controller)/launch/control.launch"/>
+  <include file="$(find franka_effort_controller)/launch/feedbackcontrol.launch"/>
 </launch>
