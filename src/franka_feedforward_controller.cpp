@@ -8,6 +8,8 @@
 #include <ros/ros.h>
 
 #include <franka/robot_state.h>
+#include <geometry_msgs/PoseStamped.h>
+
 
 namespace franka_effort_controller {
     bool FeedforwardController::init(hardware_interface::RobotHW* robot_hw,
@@ -76,6 +78,9 @@ namespace franka_effort_controller {
             << ex.what());
         return false;
     }
+    ros::NodeHandle nh;
+
+    pospub = nh.advertise<geometry_msgs::PoseStamped>("/ee_pose", 1000);
 
     return true;
 
@@ -83,42 +88,58 @@ namespace franka_effort_controller {
 
     void FeedforwardController::starting(const ros::Time& /* time */) {
     //getting the intial time to generate command in update 
-    std::array<double, 7> qarray  = {0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398};
-    initial_q(*qarray.data());
-    std::array<double, 7> garray  = {0.249814, -0.403797, 0.811459, -2.01424, 0.302385, 2.02715, 0.762035};
-    goal_q(*garray.data());
     beginTime = ros::Time::now(); 
-    MessageTime = ros::Duration(5);
-    endTime = beginTime + MessageTime;  
+    MessageTime = ros::Duration(5.0);
+    endTime = beginTime + MessageTime;
+    // initial_q << 0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398;
+    // goal_q << 0.249814, -0.403797, 0.811459, -2.01424, 0.302385, 2.02715, 0.762035;  
 
     }
 
     void FeedforwardController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
+    std::array<double, 7> qarray  = {0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398};
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> initial_q(qarray.data());
+    std::array<double, 7> garray  = {0.249814, -0.403797, 0.811459, -2.01424, 0.302385, 2.02715, 0.762035};
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> goal_q(garray.data());
     ros::Time curTime = ros::Time::now(); 
     ros::Duration passedTime = curTime - beginTime;
     std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data()); 
     Eigen::VectorXd tau_d(7);
     franka::RobotState robot_state = state_handle_->getRobotState();
+    Eigen::Matrix<double, 7, 1> diff(goal_q-initial_q);
+    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+    Eigen::Vector3d position_d_(transform.translation());
+    Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
+
+
+
     if (passedTime.toSec()< MessageTime.toSec()) {
-        Eigen::Matrix<double, 7, 1> q (initial_q + (3*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),2)-2*pow(passedTime.toSec(),3)/pow(MessageTime.toSec(),3))*(goal_q-initial_q));
-        Eigen::Matrix<double, 7, 1> dq ((6*passedTime.toSec()/pow(MessageTime.toSec(),2)-6*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),3))*(goal_q-initial_q));
-        Eigen::Matrix<double, 7, 1> ddq ((6/pow(MessageTime.toSec(),2)-12*passedTime.toSec()/pow(MessageTime.toSec(),3))*(goal_q-initial_q));
+        Eigen::Matrix<double, 7, 1> q (initial_q + (3*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),2)-2*pow(passedTime.toSec(),3)/pow(MessageTime.toSec(),3))*diff);
+        Eigen::Matrix<double, 7, 1> dq ((6*passedTime.toSec()/pow(MessageTime.toSec(),2)-6*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),3))*diff);
+        Eigen::Matrix<double, 7, 1> ddq ((6/pow(MessageTime.toSec(),2)-12*passedTime.toSec()/pow(MessageTime.toSec(),3))*diff);
         std::array<double, 49> mass_array = model_handle_->getMass();
         Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
         Eigen::Matrix<double, 7, 1>  TF(mass*ddq); 
-        std::array<double, 16> robot_pose_ = cur_state.O_T_EE;
 
         tau_d << coriolis+TF;
-        printf("%.7lf\n",robot_pose_[12]);
-        printf("%.7lf\n",robot_pose_[13]);
-        printf("%.7lf\n",robot_pose_[14]);
     }
     else {
         Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-        tau_d << coriolis-20*dq;        
+        tau_d << coriolis-10*dq;        
     }
+
+    geometry_msgs::PoseStamped pose;
+    pose.pose.orientation.x = orientation_d_.x();
+    pose.pose.orientation.y = orientation_d_.y();
+    pose.pose.orientation.z = orientation_d_.z();
+    pose.pose.orientation.w = orientation_d_.w();
+    pose.pose.position.x = position_d_[0];
+    pose.pose.position.y = position_d_[1];
+    pose.pose.position.z = position_d_[2];
+    pospub.publish(pose);
+
     for (size_t i = 0; i < 7; ++i) {
          joint_handles_[i].setCommand(tau_d[i]);
      }

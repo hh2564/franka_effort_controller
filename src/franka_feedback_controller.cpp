@@ -1,4 +1,4 @@
-#include <franka_effort_controller/franka_effort_controller.h>
+#include <franka_effort_controller/franka_feedback_controller.h>
 
 #include <cmath>
 #include <memory>
@@ -11,7 +11,7 @@
 #include <franka/robot_state.h>
 
 namespace franka_effort_controller {
-    bool JointImpedanceController::init(hardware_interface::RobotHW* robot_hw,
+    bool FeedbackController::init(hardware_interface::RobotHW* robot_hw,
                                            ros::NodeHandle& node_handle) {
     //checking to see if the default parameters can be access through node handle
     //and also getting information and interfaces  
@@ -82,16 +82,18 @@ namespace franka_effort_controller {
     realtime_tools::RealtimePublisher<franka_example_controllers::JointTorqueComparison> torques_publisher_;
     torques_publisher_.init(node_handle, "torque_comparison", 1);
 
+    std::fill(dq_filtered_.begin(), dq_filtered_.end(), 0);
 
     ros::NodeHandle nh;
 
     pospub = nh.advertise<geometry_msgs::PoseStamped>("/ee_pose", 1000);
 
+
     return true;
 
     }
 
-    void JointImpedanceController::starting(const ros::Time& /* time */) {
+    void FeedbackController::starting(const ros::Time& /* time */) {
     //getting the intial time to generate command in update 
     elapsed_time_ = ros::Duration(0.0);
 
@@ -102,7 +104,7 @@ namespace franka_effort_controller {
     }
 
 
-    void JointImpedanceController::update(const ros::Time& /*time*/,
+    void FeedbackController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
@@ -142,6 +144,7 @@ namespace franka_effort_controller {
     }
     else {
         tau_d << TF+coriolis-dq;
+
         
     }
 
@@ -156,8 +159,6 @@ namespace franka_effort_controller {
     pose.pose.position.y = position_d_[1];
     pose.pose.position.z = position_d_[2];
     pospub.publish(pose);
-
-
 
      for (size_t i = 0; i < 7; ++i) {
          joint_handles_[i].setCommand(tau_d[i]);
@@ -185,7 +186,7 @@ namespace franka_effort_controller {
     
 
     }
-    Eigen::Matrix<double, 7, 1> JointImpedanceController::saturateTorqueRate(
+    Eigen::Matrix<double, 7, 1> FeedbackController::saturateTorqueRate(
         const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
         const Eigen::Matrix<double, 7, 1>& tau_J_d) {  // NOLINT (readability-identifier-naming)
     Eigen::Matrix<double, 7, 1> tau_d_saturated{};
@@ -199,5 +200,5 @@ namespace franka_effort_controller {
 
 }
 
-PLUGINLIB_EXPORT_CLASS(franka_effort_controller::JointImpedanceController,
+PLUGINLIB_EXPORT_CLASS(franka_effort_controller::FeedbackController,
                        controller_interface::ControllerBase)

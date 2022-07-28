@@ -18,7 +18,7 @@
 #include <Eigen/Dense>
 
 namespace franka_effort_controller {
-class FeedforwardController : public controller_interface::MultiInterfaceController<
+class FeedbackController : public controller_interface::MultiInterfaceController<
                                         franka_hw::FrankaModelInterface,
                                         hardware_interface::EffortJointInterface,
                                         franka_hw::FrankaStateInterface> {
@@ -28,6 +28,9 @@ public:
     void update(const ros::Time&, const ros::Duration& period) override;
 
 private: 
+    Eigen::Matrix<double, 7, 1> saturateTorqueRate(
+        const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
+        const Eigen::Matrix<double, 7, 1>& tau_J_d);  // NOLINT (readability-identifier-naming)
 
     std::unique_ptr<franka_hw::FrankaModelHandle> model_handle_;
     std::vector<hardware_interface::JointHandle> joint_handles_;
@@ -49,14 +52,7 @@ private:
     std::array<double, 16> robot_pose_;
     const double delta_tau_max_{1.0};
     const double tol{5e-3};
-    ros::Time beginTime; 
-    ros::Duration MessageTime;
-    ros::Time endTime;
-    std::array<double, 7> qarray; 
-    std::array<double, 7> garray;
     ros::Publisher pospub;
-
-    
     
 
 };
