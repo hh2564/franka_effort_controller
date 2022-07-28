@@ -94,6 +94,9 @@ namespace franka_effort_controller {
     void JointImpedanceController::starting(const ros::Time& /* time */) {
     //getting the intial time to generate command in update 
     elapsed_time_ = ros::Duration(0.0);
+    beginTime = ros::Time::now(); 
+    MessageTime = ros::Duration(5.0);
+    endTime = beginTime + MessageTime;
 
 
     
@@ -104,25 +107,33 @@ namespace franka_effort_controller {
 
     void JointImpedanceController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
+    std::array<double, 7> qarray  = {0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398};
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> initial_q(qarray.data());
+    std::array<double, 7> garray  = {0.327733, 0.340527, 0.553659, -1.37565, -0.141557, 1.98037, 0.671678};
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> goal_q(garray.data());
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
     Eigen::Map<Eigen::Matrix<double, 6, 7>> raw_jacobian(jacobian_array.data());
     Eigen::Matrix<double, 3, 7> jacobian(raw_jacobian.topRows(3));
     franka::RobotState robot_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-    Eigen::DiagonalMatrix<double, 3>  kp(0.75, 1.5, 0.75);
+    Eigen::DiagonalMatrix<double, 3>  kp(1, 2, 1);
     Eigen::DiagonalMatrix<double, 3>  kd(0.5, 0.5, 0.5);
-    Eigen::Matrix<double, 3, 1> desired_pos(0.2,0.5,0.5);
+    Eigen::Matrix<double, 3, 1> desired_pos(0.501,0.503,0.478);
     std::array<double, 16> robot_pose_ = robot_state.O_T_EE;
     std::array<double, 7> q = robot_state.q;
     Eigen::Matrix<double, 3, 1> pos(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
     Eigen::Matrix<double, 3, 1> pos_diff(desired_pos-pos);
     Eigen::Matrix<double, 3, 1> delta_dq(jacobian*dq);
     Eigen::Matrix<double, 3, 1> F = kp*pos_diff-kd*delta_dq;
-    Eigen::Matrix<double, 7, 1> TF = jacobian.transpose()*F;
+    Eigen::Matrix<double, 7, 1> TFb = jacobian.transpose()*F;
+    Eigen::Matrix<double, 7, 1> diff(goal_q-initial_q);
     Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
     Eigen::Vector3d position_d_(transform.translation());
     Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
+    ros::Time curTime = ros::Time::now(); 
+    ros::Duration passedTime = curTime - beginTime;
+
     
     
     
@@ -130,20 +141,26 @@ namespace franka_effort_controller {
     Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
     std::array<double, 7> gravity_array = model_handle_->getGravity();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(  // NOLINT (readability-identifier-naming)
-      robot_state.tau_J_d.data());
 
     Eigen::VectorXd tau_d(7);
 
     //  tau_d << saturateTorqueRate(tau_d, tau_J_d);
 
-    if (pos_diff.norm()< tol) {
-        tau_d << coriolis-20*dq;
+    if (passedTime.toSec()< MessageTime.toSec()) {
+        Eigen::Matrix<double, 7, 1> q (initial_q + (3*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),2)-2*pow(passedTime.toSec(),3)/pow(MessageTime.toSec(),3))*diff);
+        Eigen::Matrix<double, 7, 1> dq ((6*passedTime.toSec()/pow(MessageTime.toSec(),2)-6*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),3))*diff);
+        Eigen::Matrix<double, 7, 1> ddq ((6/pow(MessageTime.toSec(),2)-12*passedTime.toSec()/pow(MessageTime.toSec(),3))*diff);
+        std::array<double, 49> mass_array = model_handle_->getMass();
+        Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
+        Eigen::Matrix<double, 7, 1>  TFf(mass*ddq); 
+
+        tau_d << coriolis+TFf+TFb;
     }
     else {
-        tau_d << TF+coriolis-dq;
-        
+        tau_d << coriolis+TFb-dq;        
     }
+
+
 
     // tau_d << coriolis-20*dq;
 

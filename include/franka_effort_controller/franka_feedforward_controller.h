@@ -52,8 +52,6 @@ private:
     ros::Time beginTime; 
     ros::Duration MessageTime;
     ros::Time endTime;
-    std::array<double, 7> qarray; 
-    std::array<double, 7> garray;
     ros::Publisher pospub;
 
     

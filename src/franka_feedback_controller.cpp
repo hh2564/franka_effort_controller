@@ -114,7 +114,7 @@ namespace franka_effort_controller {
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
     Eigen::DiagonalMatrix<double, 3>  kp(0.75, 1.5, 0.75);
     Eigen::DiagonalMatrix<double, 3>  kd(0.5, 0.5, 0.5);
-    Eigen::Matrix<double, 3, 1> desired_pos(0.2,0.5,0.5);
+    Eigen::Matrix<double, 3, 1> desired_pos(0.501,0.503,0.478);
     std::array<double, 16> robot_pose_ = robot_state.O_T_EE;
     std::array<double, 7> q = robot_state.q;
     Eigen::Matrix<double, 3, 1> pos(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
@@ -143,7 +143,7 @@ namespace franka_effort_controller {
         tau_d << coriolis-20*dq;
     }
     else {
-        tau_d << TF+coriolis-dq;
+        tau_d << TF+coriolis-dq/2;
 
         
     }

@@ -53,6 +53,9 @@ private:
     const double delta_tau_max_{1.0};
     const double tol{5e-3};
     ros::Publisher pospub;
+    ros::Time beginTime; 
+    ros::Duration MessageTime;
+    ros::Time endTime;
     
 
 };

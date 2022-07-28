@@ -100,7 +100,7 @@ namespace franka_effort_controller {
                                              const ros::Duration& period) {
     std::array<double, 7> qarray  = {0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398};
     Eigen::Map<Eigen::Matrix<double, 7, 1>> initial_q(qarray.data());
-    std::array<double, 7> garray  = {0.249814, -0.403797, 0.811459, -2.01424, 0.302385, 2.02715, 0.762035};
+    std::array<double, 7> garray  = {0.327733, 0.340527, 0.553659, -1.37565, -0.141557, 1.98037, 0.671678};
     Eigen::Map<Eigen::Matrix<double, 7, 1>> goal_q(garray.data());
     ros::Time curTime = ros::Time::now(); 
     ros::Duration passedTime = curTime - beginTime;
