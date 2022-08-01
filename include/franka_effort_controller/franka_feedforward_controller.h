@@ -1,4 +1,15 @@
 #pragma once
+#include "pinocchio/fwd.hpp"
+#include "pinocchio/parsers/urdf.hpp"
+#include "pinocchio/algorithm/joint-configuration.hpp"
+#include "pinocchio/algorithm/kinematics.hpp"
+#include "pinocchio/algorithm/jacobian.hpp"
+#include "pinocchio/algorithm/aba.hpp"
+#include "pinocchio/algorithm/rnea.hpp"
+#include "pinocchio/algorithm/crba.hpp"
+#include "pinocchio/algorithm/frames.hpp"
+#include "pinocchio/multibody/model.hpp"
+#include "pinocchio/algorithm/model.hpp"
 
 
 #include <memory>
@@ -19,7 +30,6 @@
 #include <Eigen/Dense>
 
 // // Pinocchio
-// #include "pinocchio/fwd.hpp"
 // #include "pinocchio/parsers/urdf.hpp"
 // #include "pinocchio/algorithm/joint-configuration.hpp"
 // #include "pinocchio/algorithm/kinematics.hpp"
@@ -89,6 +99,7 @@ private:
     Eigen::Matrix<double, 6, 1> xp{};
     Eigen::Matrix<double, 6, 1> Bya{};
     Eigen::Matrix<double, 6, 1> xya{};
+    pinocchio::Model model;
 
 
     

@@ -37,7 +37,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
-# find_package(pinocchio REQUIRED)
+find_package(pinocchio REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Franka 0.9.0 QUIET)
 if(NOT Franka_FOUND)
@@ -189,7 +189,7 @@ add_dependencies(franka_effort_controller
 )
 
 target_link_libraries(${PROJECT_NAME}
-  # pinocchio::pinocchio  
+  pinocchio::pinocchio  
   ${catkin_LIBRARIES}
   ${Franka_LIBRARIES}
 )
