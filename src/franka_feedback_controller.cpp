@@ -108,8 +108,9 @@ namespace franka_effort_controller {
                                              const ros::Duration& period) {
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+    // position
     Eigen::Map<Eigen::Matrix<double, 6, 7>> raw_jacobian(jacobian_array.data());
-    Eigen::Matrix<double, 3, 7> jacobian(raw_jacobian.topRows(3));
+    Eigen::Matrix<double, 3, 7> jacobianp(raw_jacobian.topRows(3));
     franka::RobotState robot_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
     Eigen::DiagonalMatrix<double, 3>  kp(0.75, 1.5, 0.75);
@@ -119,26 +120,16 @@ namespace franka_effort_controller {
     std::array<double, 7> q = robot_state.q;
     Eigen::Matrix<double, 3, 1> pos(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
     Eigen::Matrix<double, 3, 1> pos_diff(desired_pos-pos);
-    Eigen::Matrix<double, 3, 1> delta_dq(jacobian*dq);
+    Eigen::Matrix<double, 3, 1> delta_dq(jacobianp*dq);
     Eigen::Matrix<double, 3, 1> F = kp*pos_diff-kd*delta_dq;
-    Eigen::Matrix<double, 7, 1> TF = jacobian.transpose()*F;
-    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-    Eigen::Vector3d position_d_(transform.translation());
-    Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
-    
-    
-    
+    Eigen::Matrix<double, 7, 1> TF = jacobianp.transpose()*F;
+
+    // orientation
+    Eigen::Matrix<double, 3, 7> jacobiano(raw_jacobian.bottomRows(3));
+  
     std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
-    std::array<double, 7> gravity_array = model_handle_->getGravity();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(  // NOLINT (readability-identifier-naming)
-      robot_state.tau_J_d.data());
-
     Eigen::VectorXd tau_d(7);
-
-    //  tau_d << saturateTorqueRate(tau_d, tau_J_d);
-
     if (pos_diff.norm()< tol) {
         tau_d << coriolis-20*dq;
     }
@@ -149,6 +140,9 @@ namespace franka_effort_controller {
     }
 
     // tau_d << coriolis-20*dq;
+    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+    Eigen::Vector3d position_d_(transform.translation());
+    Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
 
     geometry_msgs::PoseStamped pose;
     pose.pose.orientation.x = orientation_d_.x();

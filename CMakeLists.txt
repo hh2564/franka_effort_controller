@@ -37,6 +37,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
+# find_package(pinocchio REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Franka 0.9.0 QUIET)
 if(NOT Franka_FOUND)
@@ -70,36 +71,6 @@ catkin_package(
     visualization_msgs
   DEPENDS Franka
 )
-
-add_library(franka_effort_controller
-  src/franka_effort_controller.cpp
-  src/franka_feedback_controller.cpp
-  src/franka_feedforward_controller.cpp
-)
-
-add_dependencies(franka_effort_controller
-  ${${PROJECT_NAME}_EXPORTED_TARGETS}
-  ${catkin_EXPORTED_TARGETS}
-  ${PROJECT_NAME}_generate_messages_cpp
-  ${PROJECT_NAME}_gencpp
-)
-
-target_link_libraries(franka_effort_controller PUBLIC
-  ${Franka_LIBRARIES}
-  ${catkin_LIBRARIES}
-)
-
-target_include_directories(franka_effort_controller SYSTEM PUBLIC
-  ${Franka_INCLUDE_DIRS}
-  ${EIGEN3_INCLUDE_DIRS}
-  ${catkin_INCLUDE_DIRS}
-)
-
-target_include_directories(franka_effort_controller PUBLIC
-  include
-)
-
-
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -186,12 +157,12 @@ target_include_directories(franka_effort_controller PUBLIC
 ## LIBRARIES: libraries you create in this project that dependent projects also need
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
-catkin_package(
+# catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES franka_effort_controller
 #  CATKIN_DEPENDS controller_interface controller_manager dynamic_reconfigure eigen_conversions franka_gripper franka_hw gazebo_ros geometry_msgs hardware_interface joint_limits_interface joint_state_publisher message_generation pluginlib realtime_tools robot_state_publisher roscpp rospy rviz tf tf_conversions urdf visualization_msgs
 #  DEPENDS system_lib
-)
+# )
 
 ###########
 ## Build ##
@@ -202,6 +173,35 @@ catkin_package(
 include_directories(
 # include
   ${catkin_INCLUDE_DIRS}
+)
+
+add_library(franka_effort_controller
+  src/franka_effort_controller.cpp
+  src/franka_feedback_controller.cpp
+  src/franka_feedforward_controller.cpp
+)
+
+add_dependencies(franka_effort_controller
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+  ${PROJECT_NAME}_generate_messages_cpp
+  ${PROJECT_NAME}_gencpp
+)
+
+target_link_libraries(${PROJECT_NAME}
+  # pinocchio::pinocchio  
+  ${catkin_LIBRARIES}
+  ${Franka_LIBRARIES}
+)
+
+target_include_directories(franka_effort_controller SYSTEM PUBLIC
+  ${Franka_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
+  ${catkin_INCLUDE_DIRS}
+)
+
+target_include_directories(franka_effort_controller PUBLIC
+  include
 )
 
 ## Declare a C++ library
@@ -245,6 +245,7 @@ install(TARGETS franka_effort_controller
 
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+  FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
 )
 
 install(DIRECTORY launch
@@ -278,15 +279,7 @@ endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/PepTools.cmake OPTIONAL
   RESULT_VARIABLE PEP_TOOLS
-)
-if(PEP_TOOLS)
-  file(GLOB_RECURSE PYSOURCES ${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.py)
-  add_pyformat_target(franka_control FILES ${PYSOURCES})
-endif()
-
-
-# all install targets should use catkin DESTINATION variables
-# See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
+)#include "pinocchio/fwd.hpp"l
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination

@@ -34,6 +34,7 @@ franka_effort_controller:
     vel_max: 0.15
     publish_rate: 10.0
     coriolis_factor: 1.0
+    MessageTime: 10.0
 
 franka_feedforward_controller:
     type: franka_effort_controller/FeedforwardController

@@ -17,6 +17,20 @@
 #include <franka_hw/trigger_rate.h>
 #include <Eigen/Dense>
 
+// // Pinocchio
+// #include "pinocchio/fwd.hpp"
+// #include "pinocchio/parsers/urdf.hpp"
+// #include "pinocchio/algorithm/joint-configuration.hpp"
+// #include "pinocchio/algorithm/kinematics.hpp"
+// #include "pinocchio/algorithm/jacobian.hpp"
+// #include "pinocchio/algorithm/aba.hpp"
+// #include "pinocchio/algorithm/rnea.hpp"
+// #include "pinocchio/algorithm/crba.hpp"
+// #include "pinocchio/algorithm/frames.hpp"
+// #include "pinocchio/multibody/model.hpp"
+// #include "pinocchio/algorithm/model.hpp"
+
+
 namespace franka_effort_controller {
 class JointImpedanceController : public controller_interface::MultiInterfaceController<
                                         franka_hw::FrankaModelInterface,
@@ -56,6 +70,7 @@ private:
     ros::Time beginTime; 
     ros::Duration MessageTime;
     ros::Time endTime;
+    // pinocchio::Model model;
     
 
 };

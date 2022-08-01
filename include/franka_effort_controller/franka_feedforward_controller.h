@@ -1,5 +1,6 @@
 #pragma once
 
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,20 @@
 #include <franka_hw/franka_model_interface.h>
 #include <franka_hw/trigger_rate.h>
 #include <Eigen/Dense>
+
+// // Pinocchio
+// #include "pinocchio/fwd.hpp"
+// #include "pinocchio/parsers/urdf.hpp"
+// #include "pinocchio/algorithm/joint-configuration.hpp"
+// #include "pinocchio/algorithm/kinematics.hpp"
+// #include "pinocchio/algorithm/jacobian.hpp"
+// #include "pinocchio/algorithm/aba.hpp"
+// #include "pinocchio/algorithm/rnea.hpp"
+// #include "pinocchio/algorithm/crba.hpp"
+// #include "pinocchio/algorithm/frames.hpp"
+// #include "pinocchio/multibody/model.hpp"
+// #include "pinocchio/algorithm/model.hpp"
+
 
 namespace franka_effort_controller {
 class FeedforwardController : public controller_interface::MultiInterfaceController<
@@ -38,6 +53,12 @@ private:
     double vel_max_{0.05};
     double angle_{0.0};
     double vel_current_{0.0};
+    double xd{0.5};
+    double yd{0.5};
+    double zd{0.5};
+    double rd{1.5707};
+    double pd{0}; 
+    double yad{0.707}; 
 
     std::vector<double> k_gains_;
     std::vector<double> d_gains_;
@@ -53,6 +74,22 @@ private:
     ros::Duration MessageTime;
     ros::Time endTime;
     ros::Publisher pospub;
+    double T; 
+    Eigen::Matrix<double, 6, 6> A{};
+    Eigen::Matrix<double, 6, 6> Ainv{};
+    Eigen::Matrix<double, 6, 1> Bx{};
+    Eigen::Matrix<double, 6, 1> xx{};
+    Eigen::Matrix<double, 6, 1> By{};
+    Eigen::Matrix<double, 6, 1> xy{};
+    Eigen::Matrix<double, 6, 1> Bz{};
+    Eigen::Matrix<double, 6, 1> xz{};
+    Eigen::Matrix<double, 6, 1> Br{};
+    Eigen::Matrix<double, 6, 1> xr{};
+    Eigen::Matrix<double, 6, 1> Bp{};
+    Eigen::Matrix<double, 6, 1> xp{};
+    Eigen::Matrix<double, 6, 1> Bya{};
+    Eigen::Matrix<double, 6, 1> xya{};
+
 
     
     
