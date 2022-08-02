@@ -9,6 +9,7 @@
 
 #include <franka/robot_state.h>
 #include <geometry_msgs/PoseStamped.h>
+#include "std_msgs/Float64MultiArray.h"
 
 
 namespace franka_effort_controller {
@@ -19,7 +20,6 @@ namespace franka_effort_controller {
         ROS_ERROR("FeedforwardController: Could not read parameter arm_id");
         return false;
     }
-    std::vector<std::string> joint_names;
     if (!node_handle.getParam("joint_names", joint_names) || joint_names.size() != 7) {
         ROS_ERROR(
             "FeedforwardController: Invalid or no joint_names parameters provided, aborting "
@@ -81,6 +81,15 @@ namespace franka_effort_controller {
     ros::NodeHandle nh;
 
     pospub = nh.advertise<geometry_msgs::PoseStamped>("/ee_pose", 1000);
+    torquepub = nh.advertise<std_msgs::Float64MultiArray>("/tau_command", 1000);
+
+    //need to change urdf_filename to the path of urdf file in franaka_effort_controller/urdf while using 
+    std::string urdf_filename = "/home/ubuntu/catkin_ws/src/franka_effort_controller/urdf/model.urdf";
+
+    //Importing model and data for pinocchio 
+    pinocchio::urdf::buildModel(urdf_filename,model);
+    data = pinocchio::Data(model);
+
 
     return true;
 
@@ -92,23 +101,33 @@ namespace franka_effort_controller {
     MessageTime = ros::Duration(10.0);
     endTime = beginTime + MessageTime;
     franka::RobotState initial_state = state_handle_->getRobotState();
+
+    //getting the initial position and orientation of the ee 
     Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(initial_state.O_T_EE.data()));
     Eigen::Vector3d position_init_(initial_transform.translation());
     Eigen::Quaterniond orientation_init_(Eigen::Quaterniond(initial_transform.linear()));
+    //converting from quaternion to euler angle 
     auto euler = orientation_init_.toRotationMatrix().eulerAngles(0, 1, 2);
     std::cout << "Euler from quaternion in roll, pitch, yaw"<< std::endl << euler << std::endl;
 
     
-
+    //solves for the constants x_0-6 for the six degree polynomial 
+    //T is the end time for the feedforward control 
     T = MessageTime.toSec(); 
+    // A is a 6*6 matrix consists of f(0);f'(0);f''(0);f(T);f'(T);f''(T)
     A << 1,0,0,0,0,0,
          0,1,0,0,0,0, 
          0,0,2,0,0,0,
          1,T,pow(T,2),pow(T,3), pow(T,4),pow(T,5),
          0,1,2*T, 3*pow(T,2), 4*pow(T,3), 5*pow(T,4),
          0,0,2,6*T, 12*pow(T,2),20*pow(T,3); 
+    // calculating A^-1 
     Ainv << A.inverse(); 
+    // B_<var> is the vector representation of the initial and end boundary conditions of varable var 
+    // <var>d is the desired end position of var in each direction/orientation 
     Bx <<  position_init_[0],0,0,xd,0,0;
+    // x<var> is a vector consists of constants we need to solve for on direction <var> 
+    // A*x<var> = B<var> ====> x<var> = A^-1*B<var>
     xx << Ainv*Bx; 
     By <<  position_init_[1],0,0,yd,0,0;
     xy << Ainv*By;
@@ -122,39 +141,36 @@ namespace franka_effort_controller {
     xya << Ainv*Bya; 
     
 
-    // initial_q << 0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398;
-    // goal_q << 0.249814, -0.403797, 0.811459, -2.01424, 0.302385, 2.02715, 0.762035;  
 
     }
 
     void FeedforwardController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
+    franka::RobotState robot_state = state_handle_->getRobotState();
+    //getting jacobian and pseudo jacobian at this time instance                                             
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
     Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
     Eigen::Matrix<double, 7, 6> pseudo_jacobian(jacobian.transpose()*(jacobian*jacobian.transpose()).inverse()); 
     
-    std::array<double, 7> qarray  = {0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398};
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> initial_q(qarray.data());
-    std::array<double, 7> garray  = {0.327733, 0.340527, 0.553659, -1.37565, -0.141557, 1.98037, 0.671678};
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> goal_q(garray.data());
+    //calculating for the time variable t to use in polynomial 
     ros::Time curTime = ros::Time::now(); 
     ros::Duration passedTime = curTime - beginTime;
+    double t = passedTime.toSec(); 
+
     std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data()); 
-    Eigen::VectorXd tau_d(7);
-    franka::RobotState robot_state = state_handle_->getRobotState();
-    Eigen::Matrix<double, 7, 1> diff(goal_q-initial_q);
-    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-    Eigen::Vector3d position_d_(transform.translation());
-    Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
-    double t = passedTime.toSec(); 
+
+    //calculating time vector t_pos, t_vel, t_acc, that could use to calculate the position, velocity, and acceleration of the ee at current time t
+    // by multiplying time vector and the constant vector x<var> that we found previously 
     Eigen::Matrix<double, 1, 6> tpos {};
     tpos << 1,t,pow(t,2),pow(t,3), pow(t,4),pow(t,5); 
     Eigen::Matrix<double, 1, 6> tvel {};
     tvel << 0,1,2*t, 3*pow(t,2), 4*pow(t,3), 5*pow(t,4); 
     Eigen::Matrix<double, 1, 6> tacc {};
     tacc << 0,0,2,6*t, 12*pow(t,2),20*pow(t,3);
+
+    //calculating the position, velocity, acceleration in direction <var> for the ee
     double x = tpos*xx;
     double dx = tvel*xx; 
     double ddx = tacc*xx; 
@@ -172,33 +188,46 @@ namespace franka_effort_controller {
     double ddp = tacc*xp;
     double ya = tpos*xya;
     double dya = tvel*xya; 
-    double ddya = tacc*xya;    
+    double ddya = tacc*xya;
 
+    //concentrating postion, velocity, acceleration varables into vectors respectively 
+    Eigen::Matrix <double,6,1> X{}; 
+    X << x,y,z,r,p,ya;
+    Eigen::Matrix <double,6,1> dX{};
+    dX <<dx,dy,dz,dr,dp,dya;
+    Eigen::Matrix <double,6,1> ddX{};   
+    ddX <<ddx,ddy,ddz,ddr,ddp,ddya;
 
+    //getting current joint position and velocity 
+    //dX = Jdq =====> J^{+}dX  = dq 
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
+    Eigen::Matrix<double, 7, 1> dq(pseudo_jacobian*dX); 
+
+    // updating model data for pinocchio and calculating jacobian dot 
+    pinocchio::forwardKinematics(model,data,q,dq,0.0*dq); 
+    pinocchio::updateFramePlacements(model,data);
+    Eigen::Matrix<double, 6, 7> dJ(pinocchio::computeJointJacobiansTimeVariation(model,data,q,dq));
+
+    Eigen::VectorXd tau_d(7);
 
     if (passedTime.toSec()< MessageTime.toSec()) {
-        Eigen::Matrix <double,6,1> X{}; 
-        X << x,y,z,r,p,ya;
-        Eigen::Matrix <double,6,1> dX{};
-        dX <<dx,dy,dz,dr,dp,dya;
-        Eigen::Matrix <double,6,1> ddX{};   
-        ddX <<ddx,ddy,ddz,ddr,ddp,ddya;
 
-
-        // Eigen::Matrix<double, 7, 1> q (initial_q + (3*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),2)-2*pow(passedTime.toSec(),3)/pow(MessageTime.toSec(),3))*diff);
-        // Eigen::Matrix<double, 7, 1> dq ((6*passedTime.toSec()/pow(MessageTime.toSec(),2)-6*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),3))*diff);
-        // Eigen::Matrix<double, 7, 1> ddq ((6/pow(MessageTime.toSec(),2)-12*passedTime.toSec()/pow(MessageTime.toSec(),3))*diff);
+        //gettign the mass matrix 
         std::array<double, 49> mass_array = model_handle_->getMass();
         Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
-        // Eigen::Matrix<double, 7, 1>  TF(mass*ddq); 
+        //ddX = Jdq+Jddq ====> ddX-Jdq = Jddq =====> J^{+} (ddX-Jdq) = ddq ========>MJ^{+}(ddX-Jdq) = Mddq = TF 
+        Eigen::Matrix<double, 7, 1>  TF(mass*pseudo_jacobian*(ddX-dJ*dq)); 
 
-        // tau_d << coriolis+TF;
+        tau_d << coriolis+TF;
     }
     else {
-        Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-        tau_d << coriolis-10*dq;        
+        tau_d << coriolis;        
     }
 
+    //for the ee_pose publisher
+    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+    Eigen::Vector3d position_d_(transform.translation());
+    Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
     geometry_msgs::PoseStamped pose;
     pose.pose.orientation.x = orientation_d_.x();
     pose.pose.orientation.y = orientation_d_.y();
@@ -208,6 +237,14 @@ namespace franka_effort_controller {
     pose.pose.position.y = position_d_[1];
     pose.pose.position.z = position_d_[2];
     pospub.publish(pose);
+
+
+    //for the tau_command publisher 
+    std_msgs::Float64MultiArray tau; 
+    for (size_t i = 0; i < 7; ++i) {
+         tau.data.push_back(tau_d[i]);
+     }
+    torquepub.publish(tau);
 
     for (size_t i = 0; i < 7; ++i) {
          joint_handles_[i].setCommand(tau_d[i]);

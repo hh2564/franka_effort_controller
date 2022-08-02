@@ -56,6 +56,7 @@ private:
 
     std::unique_ptr<franka_hw::FrankaModelHandle> model_handle_;
     std::vector<hardware_interface::JointHandle> joint_handles_;
+    std::vector<std::string> joint_names;
 
     static constexpr double kDeltaTauMax{1.0};
     double radius_{0.1};
@@ -84,6 +85,7 @@ private:
     ros::Duration MessageTime;
     ros::Time endTime;
     ros::Publisher pospub;
+    ros::Publisher torquepub;
     double T; 
     Eigen::Matrix<double, 6, 6> A{};
     Eigen::Matrix<double, 6, 6> Ainv{};
@@ -100,6 +102,7 @@ private:
     Eigen::Matrix<double, 6, 1> Bya{};
     Eigen::Matrix<double, 6, 1> xya{};
     pinocchio::Model model;
+    pinocchio::Data data;
 
 
     
