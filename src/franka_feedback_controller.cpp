@@ -9,6 +9,7 @@
 #include <geometry_msgs/PoseStamped.h>
 
 #include <franka/robot_state.h>
+#include "std_msgs/Float64MultiArray.h"
 
 namespace franka_effort_controller {
     bool FeedbackController::init(hardware_interface::RobotHW* robot_hw,
@@ -87,6 +88,7 @@ namespace franka_effort_controller {
     ros::NodeHandle nh;
 
     pospub = nh.advertise<geometry_msgs::PoseStamped>("/ee_pose", 1000);
+    torquepub = nh.advertise<std_msgs::Float64MultiArray>("/tau_command", 1000);
 
 
     return true;
@@ -109,23 +111,41 @@ namespace franka_effort_controller {
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
     // position
-    Eigen::Map<Eigen::Matrix<double, 6, 7>> raw_jacobian(jacobian_array.data());
-    Eigen::Matrix<double, 3, 7> jacobianp(raw_jacobian.topRows(3));
+    Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
     franka::RobotState robot_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-    Eigen::DiagonalMatrix<double, 3>  kp(0.75, 1.5, 0.75);
-    Eigen::DiagonalMatrix<double, 3>  kd(0.5, 0.5, 0.5);
-    Eigen::Matrix<double, 3, 1> desired_pos(0.501,0.503,0.478);
-    std::array<double, 16> robot_pose_ = robot_state.O_T_EE;
-    std::array<double, 7> q = robot_state.q;
-    Eigen::Matrix<double, 3, 1> pos(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
-    Eigen::Matrix<double, 3, 1> pos_diff(desired_pos-pos);
-    Eigen::Matrix<double, 3, 1> delta_dq(jacobianp*dq);
-    Eigen::Matrix<double, 3, 1> F = kp*pos_diff-kd*delta_dq;
-    Eigen::Matrix<double, 7, 1> TF = jacobianp.transpose()*F;
+    Eigen::Matrix<double, 6, 6> kp{};  
+    kp << 0.75,0,0,0,0,0,
+         0,1.5,0,0,0,0, 
+         0,0,0.75,0,0,0,
+         0,0,0,0.75,0,0,
+         0,0,0,0,1.5,0, 
+         0,0,0,0,0,0.75;
+
+    Eigen::Matrix<double, 6, 6> kd{};  
+    kd << 0.5,0,0,0,0,0,
+         0,0.5,0,0,0,0, 
+         0,0,0.5,0,0,0,
+         0,0,0,0.5,0,0,
+         0,0,0,0,0.5,0, 
+         0,0,0,0,0,0.5;
+    
+    Eigen::Matrix<double, 6, 1> desired_pos{};
+    desired_pos << 0.501,0.503,0.478,1.5707,0,0.707;
+    Eigen::Affine3d curr_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+    Eigen::Vector3d position_curr_(curr_transform.translation());
+    Eigen::Quaterniond orientation_curr_(Eigen::Quaterniond(curr_transform.linear()));
+    auto euler = orientation_curr_.toRotationMatrix().eulerAngles(0, 1, 2);
+
+
+    Eigen::Matrix<double, 6, 1> pos;
+    pos << position_curr_[0],position_curr_[1],position_curr_[2],euler[0],euler[1],euler[2];
+    Eigen::Matrix<double, 6, 1> pos_diff(desired_pos-pos);
+    Eigen::Matrix<double, 6, 1> delta_dq(jacobian*dq);
+    Eigen::Matrix<double, 6, 1> F = kp*pos_diff-kd*delta_dq;
+    Eigen::Matrix<double, 7, 1> TF = jacobian.transpose()*F;
 
     // orientation
-    Eigen::Matrix<double, 3, 7> jacobiano(raw_jacobian.bottomRows(3));
   
     std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
@@ -153,6 +173,12 @@ namespace franka_effort_controller {
     pose.pose.position.y = position_d_[1];
     pose.pose.position.z = position_d_[2];
     pospub.publish(pose);
+
+    std_msgs::Float64MultiArray tau; 
+    for (size_t i = 0; i < 7; ++i) {
+         tau.data.push_back(tau_d[i]);
+     }
+    torquepub.publish(tau);
 
      for (size_t i = 0; i < 7; ++i) {
          joint_handles_[i].setCommand(tau_d[i]);
