@@ -85,10 +85,6 @@ namespace franka_effort_controller {
             << ex.what());
         return false;
     }
-    realtime_tools::RealtimePublisher<franka_example_controllers::JointTorqueComparison> torques_publisher_;
-    torques_publisher_.init(node_handle, "torque_comparison", 1);
-
-    std::fill(dq_filtered_.begin(), dq_filtered_.end(), 0);
 
     ros::NodeHandle nh;
 
@@ -118,8 +114,6 @@ namespace franka_effort_controller {
     }
 
     void FeedbackController::starting(const ros::Time& /* time */) {
-    //getting the intial time to generate command in update 
-    elapsed_time_ = ros::Duration(0.0);
     // compute initial velocity with jacobian and set x_attractor and q_d_nullspace
     // to initial configuration
     franka::RobotState initial_state = state_handle_->getRobotState();
@@ -150,7 +144,6 @@ namespace franka_effort_controller {
                                              const ros::Duration& period) {
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
-    // position
     Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
     std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
