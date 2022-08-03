@@ -29,6 +29,8 @@
 #include <franka_hw/trigger_rate.h>
 #include <Eigen/Dense>
 
+#include <franka_example_controllers/pseudo_inversion.h>
+
 // // Pinocchio
 // #include "pinocchio/parsers/urdf.hpp"
 // #include "pinocchio/algorithm/joint-configuration.hpp"
@@ -103,6 +105,11 @@ private:
     Eigen::Matrix<double, 6, 1> xya{};
     pinocchio::Model model;
     pinocchio::Data data;
+    Eigen::Vector3d position_d_;
+    Eigen::Quaterniond orientation_d_;
+    Eigen::Vector3d position_d_target_;
+    Eigen::Quaterniond orientation_d_target_;
+    Eigen::Matrix<double, 7, 1> q_d_nullspace_;
 
 
     

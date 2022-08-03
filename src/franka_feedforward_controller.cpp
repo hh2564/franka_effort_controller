@@ -84,7 +84,7 @@ namespace franka_effort_controller {
     torquepub = nh.advertise<std_msgs::Float64MultiArray>("/tau_command", 1000);
 
     //need to change urdf_filename to the path of urdf file in franaka_effort_controller/urdf while using 
-    std::string urdf_filename = "/home/ubuntu/catkin_ws/src/franka_effort_controller/urdf/model.urdf";
+    std::string urdf_filename = "/home/crrl/pin_ws/src/franka_effort_controller/urdf/model.urdf";
 
     //Importing model and data for pinocchio 
     pinocchio::urdf::buildModel(urdf_filename,model);
@@ -133,11 +133,11 @@ namespace franka_effort_controller {
     xy << Ainv*By;
     Bz <<  position_init_[2],0,0,zd,0,0;
     xz << Ainv*Bz; 
-    Br <<  euler[0],0,0,rd,0,0;
+    Br <<  euler[0],0,0,euler[0],0,0;
     xr << Ainv*Br; 
-    Bp <<  euler[1],0,0,pd,0,0;
+    Bp <<  euler[1],0,0,euler[1],0,0;
     xp << Ainv*Bp; 
-    Bya <<  euler[2],0,0,yad,0,0;
+    Bya <<  euler[2],0,0,euler[2],0,0;
     xya << Ainv*Bya; 
     
 
@@ -149,10 +149,11 @@ namespace franka_effort_controller {
     franka::RobotState robot_state = state_handle_->getRobotState();
     //getting jacobian and pseudo jacobian at this time instance                                             
     std::array<double, 42> jacobian_array =
-    model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+        model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
     Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
-    Eigen::Matrix<double, 7, 6> pseudo_jacobian(jacobian.transpose()*(jacobian*jacobian.transpose()).inverse()); 
-    
+    Eigen::MatrixXd jacobian_pinv;
+    franka_example_controllers::pseudoInverse(jacobian, jacobian_pinv);
+
     //calculating for the time variable t to use in polynomial 
     ros::Time curTime = ros::Time::now(); 
     ros::Duration passedTime = curTime - beginTime;
@@ -201,7 +202,7 @@ namespace franka_effort_controller {
     //getting current joint position and velocity 
     //dX = Jdq =====> J^{+}dX  = dq 
     Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
-    Eigen::Matrix<double, 7, 1> dq(pseudo_jacobian*dX); 
+    Eigen::Matrix<double, 7, 1> dq(robot_state.dq.data()); 
 
     // updating model data for pinocchio and calculating jacobian dot 
     pinocchio::forwardKinematics(model,data,q,dq,0.0*dq); 
@@ -213,15 +214,16 @@ namespace franka_effort_controller {
     if (passedTime.toSec()< MessageTime.toSec()) {
 
         //gettign the mass matrix 
+        Eigen::Matrix<double, 7, 1> dq_cal(jacobian_pinv*dX); 
         std::array<double, 49> mass_array = model_handle_->getMass();
         Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
         //ddX = Jdq+Jddq ====> ddX-Jdq = Jddq =====> J^{+} (ddX-Jdq) = ddq ========>MJ^{+}(ddX-Jdq) = Mddq = TF 
-        Eigen::Matrix<double, 7, 1>  TF(mass*pseudo_jacobian*(ddX-dJ*dq)); 
+        Eigen::Matrix<double, 7, 1>  TF(mass*jacobian_pinv*(ddX-dJ*dq)); 
 
         tau_d << coriolis+TF;
     }
     else {
-        tau_d << coriolis;        
+        tau_d << coriolis-10*dq;        
     }
 
     //for the ee_pose publisher
@@ -236,6 +238,7 @@ namespace franka_effort_controller {
     pose.pose.position.x = position_d_[0];
     pose.pose.position.y = position_d_[1];
     pose.pose.position.z = position_d_[2];
+    pose.header.stamp = ros::Time::now(); 
     pospub.publish(pose);
 
 
@@ -259,4 +262,3 @@ namespace franka_effort_controller {
 
 PLUGINLIB_EXPORT_CLASS(franka_effort_controller::FeedforwardController,
                        controller_interface::ControllerBase)
-

@@ -10,12 +10,17 @@
 
 #include <franka/robot_state.h>
 #include "std_msgs/Float64MultiArray.h"
+#include <franka_example_controllers/pseudo_inversion.h>
 
 namespace franka_effort_controller {
     bool FeedbackController::init(hardware_interface::RobotHW* robot_hw,
                                            ros::NodeHandle& node_handle) {
     //checking to see if the default parameters can be access through node handle
     //and also getting information and interfaces  
+    sub_equilibrium_pose_ = node_handle.subscribe(
+      "/panda_feedback_controllers/equilibrium_pose", 20, &FeedbackController::equilibriumPoseCallback, this,
+      ros::TransportHints().reliable().tcpNoDelay());
+    
     std::string arm_id;
     if (!node_handle.getParam("arm_id", arm_id)) {
         ROS_ERROR("JointImpedanceController: Could not read parameter arm_id");
@@ -90,6 +95,23 @@ namespace franka_effort_controller {
     pospub = nh.advertise<geometry_msgs::PoseStamped>("/ee_pose", 1000);
     torquepub = nh.advertise<std_msgs::Float64MultiArray>("/tau_command", 1000);
 
+    dynamic_reconfigure_compliance_param_node_ =
+      ros::NodeHandle(node_handle.getNamespace() + "dynamic_reconfigure_compliance_param_node");
+
+    dynamic_server_compliance_param_ = std::make_unique<
+        dynamic_reconfigure::Server<franka_example_controllers::compliance_paramConfig>>(
+        dynamic_reconfigure_compliance_param_node_);
+    dynamic_server_compliance_param_->setCallback(
+        boost::bind(&FeedbackController::complianceParamCallback, this, _1, _2));
+
+    position_d_.setZero();
+    orientation_d_.coeffs() << 0.0, 0.0, 0.0, 1.0;
+    position_d_target_.setZero();
+    orientation_d_target_.coeffs() << 0.0, 0.0, 0.0, 1.0;
+
+    cartesian_stiffness_.setZero();
+    cartesian_damping_.setZero();
+
 
     return true;
 
@@ -98,6 +120,24 @@ namespace franka_effort_controller {
     void FeedbackController::starting(const ros::Time& /* time */) {
     //getting the intial time to generate command in update 
     elapsed_time_ = ros::Duration(0.0);
+    // compute initial velocity with jacobian and set x_attractor and q_d_nullspace
+    // to initial configuration
+    franka::RobotState initial_state = state_handle_->getRobotState();
+    // get jacobian
+    std::array<double, 42> jacobian_array =
+        model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+    // convert to eigen
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
+    Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(initial_state.O_T_EE.data()));
+
+    // set equilibrium point to current state
+    position_d_ = initial_transform.translation();
+    orientation_d_ = Eigen::Quaterniond(initial_transform.linear());
+    position_d_target_ = initial_transform.translation();
+    orientation_d_target_ = Eigen::Quaterniond(initial_transform.linear());
+   
+    // set nullspace equilibrium configuration to initial q
+    q_d_nullspace_ = q_initial;
 
 
     
@@ -112,66 +152,79 @@ namespace franka_effort_controller {
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
     // position
     Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+    std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
     franka::RobotState robot_state = state_handle_->getRobotState();
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-    Eigen::Matrix<double, 6, 6> kp{};  
-    kp << 0.75,0,0,0,0,0,
-         0,1.5,0,0,0,0, 
-         0,0,0.75,0,0,0,
-         0,0,0,0.75,0,0,
-         0,0,0,0,1.5,0, 
-         0,0,0,0,0,0.75;
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(  // NOLINT (readability-identifier-naming)
+      robot_state.tau_J_d.data());
+    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+    Eigen::Vector3d position(transform.translation());
+    Eigen::Quaterniond orientation(transform.linear());
 
-    Eigen::Matrix<double, 6, 6> kd{};  
-    kd << 0.5,0,0,0,0,0,
-         0,0.5,0,0,0,0, 
-         0,0,0.5,0,0,0,
-         0,0,0,0.5,0,0,
-         0,0,0,0,0.5,0, 
-         0,0,0,0,0,0.5;
+
+    Eigen::Matrix<double, 6, 1> error;
+    error.head(3) << position - position_d_;
+
+    // orientation error
+    if (orientation_d_.coeffs().dot(orientation.coeffs()) < 0.0) {
+        orientation.coeffs() << -orientation.coeffs();
+    }
+    // "difference" quaternion
+    Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);
+    error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+    // Transform to base frame
+    error.tail(3) << -transform.linear() * error.tail(3);
+
+    // compute control
+    // allocate variables
+    Eigen::VectorXd tau_task(7), tau_nullspace(7), tau_d(7);
+
+    Eigen::MatrixXd jacobian_transpose_pinv;
+    franka_example_controllers::pseudoInverse(jacobian.transpose(), jacobian_transpose_pinv);
+
+    tau_task << jacobian.transpose() *
+                  (-cartesian_stiffness_ * error - cartesian_damping_ * (jacobian * dq));
+  // nullspace PD control with damping ratio = 1
+    tau_nullspace << (Eigen::MatrixXd::Identity(7, 7) -
+                        jacobian.transpose() * jacobian_transpose_pinv) *
+                        (nullspace_stiffness_ * (q_d_nullspace_ - q) -
+                            (2.0 * sqrt(nullspace_stiffness_)) * dq);
+    tau_d << tau_task + tau_nullspace + coriolis;
+  // Saturate torque rate to avoid discontinuities
+    tau_d << saturateTorqueRate(tau_d, tau_J_d);
+    for (size_t i = 0; i < 7; ++i) {
+        joint_handles_[i].setCommand(tau_d(i));
+    }
+
+    cartesian_stiffness_ =
+      filter_params_ * cartesian_stiffness_target_ + (1.0 - filter_params_) * cartesian_stiffness_;
+    cartesian_damping_ =
+        filter_params_ * cartesian_damping_target_ + (1.0 - filter_params_) * cartesian_damping_;
+    nullspace_stiffness_ =
+        filter_params_ * nullspace_stiffness_target_ + (1.0 - filter_params_) * nullspace_stiffness_;
+    std::lock_guard<std::mutex> position_d_target_mutex_lock(
+        position_and_orientation_d_target_mutex_);
+    position_d_ = filter_params_ * position_d_target_ + (1.0 - filter_params_) * position_d_;
+    orientation_d_ = orientation_d_.slerp(filter_params_, orientation_d_target_);
     
-    Eigen::Matrix<double, 6, 1> desired_pos{};
-    desired_pos << 0.501,0.503,0.478,1.5707,0,0.707;
+
+
+    //for publishing data 
     Eigen::Affine3d curr_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
     Eigen::Vector3d position_curr_(curr_transform.translation());
     Eigen::Quaterniond orientation_curr_(Eigen::Quaterniond(curr_transform.linear()));
-    auto euler = orientation_curr_.toRotationMatrix().eulerAngles(0, 1, 2);
-
-
-    Eigen::Matrix<double, 6, 1> pos;
-    pos << position_curr_[0],position_curr_[1],position_curr_[2],euler[0],euler[1],euler[2];
-    Eigen::Matrix<double, 6, 1> pos_diff(desired_pos-pos);
-    Eigen::Matrix<double, 6, 1> delta_dq(jacobian*dq);
-    Eigen::Matrix<double, 6, 1> F = kp*pos_diff-kd*delta_dq;
-    Eigen::Matrix<double, 7, 1> TF = jacobian.transpose()*F;
-
-    // orientation
-  
-    std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
-    Eigen::VectorXd tau_d(7);
-    if (pos_diff.norm()< tol) {
-        tau_d << coriolis-20*dq;
-    }
-    else {
-        tau_d << TF+coriolis-dq/2;
-
-        
-    }
-
-    // tau_d << coriolis-20*dq;
-    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-    Eigen::Vector3d position_d_(transform.translation());
-    Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
 
     geometry_msgs::PoseStamped pose;
-    pose.pose.orientation.x = orientation_d_.x();
-    pose.pose.orientation.y = orientation_d_.y();
-    pose.pose.orientation.z = orientation_d_.z();
-    pose.pose.orientation.w = orientation_d_.w();
-    pose.pose.position.x = position_d_[0];
-    pose.pose.position.y = position_d_[1];
-    pose.pose.position.z = position_d_[2];
+    pose.pose.orientation.x = orientation_curr_.x();
+    pose.pose.orientation.y = orientation_curr_.y();
+    pose.pose.orientation.z = orientation_curr_.z();
+    pose.pose.orientation.w = orientation_curr_.w();
+    pose.pose.position.x = position_curr_[0];
+    pose.pose.position.y = position_curr_[1];
+    pose.pose.position.z = position_curr_[2];
+    pose.header.stamp = ros::Time::now(); 
     pospub.publish(pose);
 
     std_msgs::Float64MultiArray tau; 
@@ -179,33 +232,10 @@ namespace franka_effort_controller {
          tau.data.push_back(tau_d[i]);
      }
     torquepub.publish(tau);
-
-     for (size_t i = 0; i < 7; ++i) {
-         joint_handles_[i].setCommand(tau_d[i]);
-     }
-
-        
-
-
-    //sending a fix command of message 
-    // double tau_d_saturated[] {10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0};
-    // for (size_t i = 0; i < 7; ++i) {
-    //     joint_handles_[i].setCommand(tau_d_saturated[i]);
-    // }
-    // updating time 
-    // elapsed_time_ += period;
-
-    //calculating torque to send command 
-    // double torque = (std::cos( elapsed_time_.toSec())) * 10;
-    //sending the command to each joint by joint_handles_ 
-    // double tau_d_saturated[] {torque, torque, torque, torque, torque, torque, torque};
-    // for (size_t i = 0; i < 7; ++i) {
-    //     joint_handles_[i].setCommand(tau_d_saturated[i]);
-    // }
-
     
 
     }
+
     Eigen::Matrix<double, 7, 1> FeedbackController::saturateTorqueRate(
         const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
         const Eigen::Matrix<double, 7, 1>& tau_J_d) {  // NOLINT (readability-identifier-naming)
@@ -217,6 +247,35 @@ namespace franka_effort_controller {
     }
     return tau_d_saturated;
 }
+    void FeedbackController::complianceParamCallback(
+        franka_example_controllers::compliance_paramConfig& config,
+        uint32_t /*level*/) {
+    cartesian_stiffness_target_.setIdentity();
+    cartesian_stiffness_target_.topLeftCorner(3, 3)
+        << config.translational_stiffness * Eigen::Matrix3d::Identity();
+    cartesian_stiffness_target_.bottomRightCorner(3, 3)
+        << config.rotational_stiffness * Eigen::Matrix3d::Identity();
+    cartesian_damping_target_.setIdentity();
+    // Damping ratio = 1
+    cartesian_damping_target_.topLeftCorner(3, 3)
+        << 2.0 * sqrt(config.translational_stiffness) * Eigen::Matrix3d::Identity();
+    cartesian_damping_target_.bottomRightCorner(3, 3)
+        << 2.0 * sqrt(config.rotational_stiffness) * Eigen::Matrix3d::Identity();
+    nullspace_stiffness_target_ = config.nullspace_stiffness;
+    }
+
+    void FeedbackController::equilibriumPoseCallback(
+    const geometry_msgs::PoseStampedConstPtr& msg) {
+    std::lock_guard<std::mutex> position_d_target_mutex_lock(
+        position_and_orientation_d_target_mutex_);
+    position_d_target_ << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
+    Eigen::Quaterniond last_orientation_d_target(orientation_d_target_);
+    orientation_d_target_.coeffs() << msg->pose.orientation.x, msg->pose.orientation.y,
+        msg->pose.orientation.z, msg->pose.orientation.w;
+    if (last_orientation_d_target.coeffs().dot(orientation_d_target_.coeffs()) < 0.0) {
+        orientation_d_target_.coeffs() << -orientation_d_target_.coeffs();
+    }
+    }
 
 }
 
