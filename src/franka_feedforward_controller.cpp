@@ -82,6 +82,7 @@ namespace franka_effort_controller {
 
     pospub = nh.advertise<geometry_msgs::PoseStamped>("/ee_pose", 1000);
     torquepub = nh.advertise<std_msgs::Float64MultiArray>("/tau_command", 1000);
+    goalpub = nh.advertise<geometry_msgs::PoseStamped>("/goal_pose", 1000);
 
     //need to change urdf_filename to the path of urdf file in franaka_effort_controller/urdf while using 
     std::string urdf_filename = "/home/crrl/pin_ws/src/franka_effort_controller/urdf/model.urdf";
@@ -89,6 +90,7 @@ namespace franka_effort_controller {
     //Importing model and data for pinocchio 
     pinocchio::urdf::buildModel(urdf_filename,model);
     data = pinocchio::Data(model);
+    controlled_frame = model.frames[model.nframes-1].name;
 
 
     return true;
@@ -98,7 +100,7 @@ namespace franka_effort_controller {
     void FeedforwardController::starting(const ros::Time& /* time */) {
     //getting the intial time to generate command in update 
     beginTime = ros::Time::now(); 
-    MessageTime = ros::Duration(10.0);
+    MessageTime = ros::Duration(5.0);
     endTime = beginTime + MessageTime;
     franka::RobotState initial_state = state_handle_->getRobotState();
 
@@ -108,7 +110,6 @@ namespace franka_effort_controller {
     Eigen::Quaterniond orientation_init_(Eigen::Quaterniond(initial_transform.linear()));
     //converting from quaternion to euler angle 
     auto euler = orientation_init_.toRotationMatrix().eulerAngles(0, 1, 2);
-    std::cout << "Euler from quaternion in roll, pitch, yaw"<< std::endl << euler << std::endl;
 
     
     //solves for the constants x_0-6 for the six degree polynomial 
@@ -139,6 +140,7 @@ namespace franka_effort_controller {
     xp << Ainv*Bp; 
     Bya <<  euler[2],0,0,euler[2],0,0;
     xya << Ainv*Bya; 
+
     
 
 
@@ -159,6 +161,7 @@ namespace franka_effort_controller {
     Eigen::Matrix<double, 1, 6> tacc {};
     tacc << 0,0,2,6*t, 12*pow(t,2),20*pow(t,3);
 
+
     //calculating the position, velocity, acceleration in direction <var> for the ee
     double x = tpos*xx;
     double dx = tvel*xx; 
@@ -173,7 +176,7 @@ namespace franka_effort_controller {
     double dr = tvel*xr; 
     double ddr = tacc*xr;
     double p = tpos*xp;
-    double dp = tvel*xp; 
+    double dp = tvel*xp;
     double ddp = tacc*xp;
     double ya = tpos*xya;
     double dya = tvel*xya; 
@@ -190,11 +193,27 @@ namespace franka_effort_controller {
 
     franka::RobotState robot_state = state_handle_->getRobotState();
     Eigen::Affine3d curr_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-    Eigen::Vector3d position_curr_(curr_transform.translation());
-    Eigen::Quaterniond orientation_curr_(Eigen::Quaterniond(curr_transform.linear()));
+
+
+
+
+    Eigen::Vector3d position_curr_{};
+    position_curr_ << x,y,z; 
+    double cy = cos(ya * 0.5);
+    double sy = sin(ya * 0.5);
+    double cp = cos(p * 0.5);
+    double sp = sin(p * 0.5);
+    double cr = cos(r * 0.5);
+    double sr = sin(r * 0.5);
+    Eigen::Quaterniond Quaternion;
+    Quaternion.w() = cr * cp * cy + sr * sp * sy;
+    Quaternion.x() = sr * cp * cy - cr * sp * sy;
+    Quaternion.y() = cr * sp * cy + sr * cp * sy;
+    Quaternion.z() = cr * cp * sy - sr * sp * cy;
+
+    
     const int JOINT_ID = 7;
-    const pinocchio::SE3 oMdes(orientation_curr_, position_curr_);
-    //getting jacobian and pseudo jacobian at this time instance
+    const pinocchio::SE3 oMdes(Quaternion, position_curr_);
     Eigen::VectorXd q = pinocchio::neutral(model);
     const double eps  = 1e-4;
     const int IT_MAX  = 1000;
@@ -225,7 +244,8 @@ namespace franka_effort_controller {
      }
     }
 
-    pinocchio::computeJointJacobian(model,data,q,JOINT_ID,J);
+    //getting jacobian and pseudo jacobian at this time instance
+    pinocchio::getFrameJacobian(model, data, model.getFrameId(controlled_frame), pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, J);
     pinocchio::Data::Matrix6 JJt;
     JJt.noalias() = J * J.transpose();
     JJt.diagonal().array() += damp;
@@ -243,11 +263,10 @@ namespace franka_effort_controller {
     pinocchio::computeMinverse(model,data,q);
     data.Minv.triangularView<Eigen::StrictlyLower>() = data.Minv.transpose().triangularView<Eigen::StrictlyLower>();
     Eigen::Matrix<double, 6, 7> dJ(pinocchio::computeJointJacobiansTimeVariation(model,data,q,dq));
-    Eigen::Matrix<double, 7, 1> coriolis(pinocchio::computeCoriolisMatrix(model,data,q,dq));
-    Eigen::Matrix<double, 7, 7> massinverse(pinocchio::computeMinverse(model,data,q)); 
-    Eigen::Matrix<double, 7, 7> mass{}; 
-    mass << massinverse.inverse();
-
+    Eigen::Matrix<double, 7, 7> coriolism(pinocchio::computeCoriolisMatrix(model,data,q,dq));
+    Eigen::Matrix<double, 7, 1> coriolis(coriolism*dq);
+    std::array<double, 49> mass_array = model_handle_->getMass();
+    Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
 
     Eigen::VectorXd tau_d(7);
 
@@ -274,6 +293,18 @@ namespace franka_effort_controller {
     pose.pose.position.z = position_d_[2];
     pose.header.stamp = ros::Time::now(); 
     pospub.publish(pose);
+
+    //for the goal_pose publisher
+    geometry_msgs::PoseStamped goalpose;
+    goalpose.pose.orientation.x = Quaternion.x();
+    goalpose.pose.orientation.y = Quaternion.y();
+    goalpose.pose.orientation.z = Quaternion.z();
+    goalpose.pose.orientation.w = Quaternion.w();
+    goalpose.pose.position.x = x;
+    goalpose.pose.position.y = y;
+    goalpose.pose.position.z = z;
+    goalpose.header.stamp = ros::Time::now(); 
+    goalpub.publish(goalpose);
 
 
     //for the tau_command publisher 

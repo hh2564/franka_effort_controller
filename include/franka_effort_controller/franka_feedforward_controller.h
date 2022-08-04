@@ -56,6 +56,8 @@ public:
     void starting(const ros::Time&) override;
     void update(const ros::Time&, const ros::Duration& period) override;
 
+    std::string getControlledFrame();
+
 private: 
 
     std::unique_ptr<franka_hw::FrankaModelHandle> model_handle_;
@@ -63,11 +65,6 @@ private:
     std::vector<std::string> joint_names;
 
     static constexpr double kDeltaTauMax{1.0};
-    double radius_{0.1};
-    double acceleration_time_{2.0};
-    double vel_max_{0.05};
-    double angle_{0.0};
-    double vel_current_{0.0};
     double xd{0.5};
     double yd{0.5};
     double zd{0.5};
@@ -75,10 +72,8 @@ private:
     double pd{0}; 
     double yad{0.707}; 
 
-    std::vector<double> k_gains_;
-    std::vector<double> d_gains_;
+
     double coriolis_factor_{1.0};
-    std::array<double, 7> dq_filtered_;
     ros::Duration elapsed_time_;
     std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;
     franka::RobotState cur_state;
@@ -90,7 +85,9 @@ private:
     ros::Time endTime;
     ros::Publisher pospub;
     ros::Publisher torquepub;
+    ros::Publisher goalpub;
     double T; 
+    std::string controlled_frame;
     Eigen::Matrix<double, 6, 6> A{};
     Eigen::Matrix<double, 6, 6> Ainv{};
     Eigen::Matrix<double, 6, 1> Bx{};
@@ -111,7 +108,6 @@ private:
     Eigen::Quaterniond orientation_d_;
     Eigen::Vector3d position_d_target_;
     Eigen::Quaterniond orientation_d_target_;
-    Eigen::Matrix<double, 7, 1> q_d_nullspace_;
 
 
     
