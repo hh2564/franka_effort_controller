@@ -35,7 +35,7 @@
   <include file="$(find gazebo_ros)/launch/empty_world.launch" if="$(arg gazebo)">
     <arg name="world_name" value="$(arg world)"/>
     <!-- Always start in paused mode, and only unpause when spawning the model -->
-    <arg name="paused" value="true"/>
+    <arg name="paused" value="false"/>
     <arg name="gui" value="$(eval not arg('headless'))"/>
     <arg name="use_sim_time" value="true"/>
   </include>

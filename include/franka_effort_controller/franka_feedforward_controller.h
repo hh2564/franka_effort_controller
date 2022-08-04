@@ -30,6 +30,8 @@
 #include <Eigen/Dense>
 
 #include <franka_example_controllers/pseudo_inversion.h>
+#include <Eigen/Geometry> 
+
 
 // // Pinocchio
 // #include "pinocchio/parsers/urdf.hpp"
