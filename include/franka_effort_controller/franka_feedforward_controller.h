@@ -33,17 +33,7 @@
 #include <Eigen/Geometry> 
 
 
-// // Pinocchio
-// #include "pinocchio/parsers/urdf.hpp"
-// #include "pinocchio/algorithm/joint-configuration.hpp"
-// #include "pinocchio/algorithm/kinematics.hpp"
-// #include "pinocchio/algorithm/jacobian.hpp"
-// #include "pinocchio/algorithm/aba.hpp"
-// #include "pinocchio/algorithm/rnea.hpp"
-// #include "pinocchio/algorithm/crba.hpp"
-// #include "pinocchio/algorithm/frames.hpp"
-// #include "pinocchio/multibody/model.hpp"
-// #include "pinocchio/algorithm/model.hpp"
+
 
 
 namespace franka_effort_controller {
@@ -108,7 +98,6 @@ private:
     Eigen::Quaterniond orientation_d_;
     Eigen::Vector3d position_d_target_;
     Eigen::Quaterniond orientation_d_target_;
-
 
     
     

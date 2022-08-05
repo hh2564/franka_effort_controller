@@ -85,7 +85,7 @@ namespace franka_effort_controller {
     goalpub = nh.advertise<geometry_msgs::PoseStamped>("/goal_pose", 1000);
 
     //need to change urdf_filename to the path of urdf file in franaka_effort_controller/urdf while using 
-    std::string urdf_filename = "/home/crrl/pin_ws/src/franka_effort_controller/urdf/model.urdf";
+    std::string urdf_filename = "/home/ubuntu/catkin_ws/src/franka_effort_controller/urdf/model.urdf";
 
     //Importing model and data for pinocchio 
     pinocchio::urdf::buildModel(urdf_filename,model);
@@ -214,7 +214,7 @@ namespace franka_effort_controller {
     
     const int JOINT_ID = 7;
     const pinocchio::SE3 oMdes(Quaternion, position_curr_);
-    Eigen::VectorXd q = pinocchio::neutral(model);
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
     const double eps  = 1e-4;
     const int IT_MAX  = 1000;
     const double DT   = 1e-1;
@@ -270,15 +270,6 @@ namespace franka_effort_controller {
 
     Eigen::VectorXd tau_d(7);
 
-    if (passedTime.toSec()< MessageTime.toSec()) {
-        //ddX = Jdq+Jddq ====> ddX-Jdq = Jddq =====> J^{+} (ddX-Jdq) = ddq ========>MJ^{+}(ddX-Jdq) = Mddq = TF 
-        Eigen::Matrix<double, 7, 1>  TF(mass*jacobian_pinv*(ddX-dJ*dq)); 
-        tau_d << coriolis+TF;
-    }
-    else {
-        tau_d << coriolis;        
-    }
-
     //for the ee_pose publisher
     Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
     Eigen::Vector3d position_d_(transform.translation());
@@ -306,6 +297,14 @@ namespace franka_effort_controller {
     goalpose.header.stamp = ros::Time::now(); 
     goalpub.publish(goalpose);
 
+    if (passedTime.toSec()< MessageTime.toSec()) {
+        //ddX = Jdq+Jddq ====> ddX-Jdq = Jddq =====> J^{+} (ddX-Jdq) = ddq ========>MJ^{+}(ddX-Jdq) = Mddq = TF 
+        Eigen::Matrix<double, 7, 1>  TF(mass*jacobian_pinv*(ddX-dJ*dq)); 
+        tau_d << coriolis+TF;
+    }
+    else {
+        tau_d << coriolis;        
+    }
 
     //for the tau_command publisher 
     std_msgs::Float64MultiArray tau; 
@@ -319,6 +318,8 @@ namespace franka_effort_controller {
      }
     
     }
+
+    
 
 
 

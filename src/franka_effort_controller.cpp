@@ -79,24 +79,107 @@ namespace franka_effort_controller {
             << ex.what());
         return false;
     }
-    realtime_tools::RealtimePublisher<franka_example_controllers::JointTorqueComparison> torques_publisher_;
-    torques_publisher_.init(node_handle, "torque_comparison", 1);
-
 
     ros::NodeHandle nh;
 
     pospub = nh.advertise<geometry_msgs::PoseStamped>("/ee_pose", 1000);
+    torquepub = nh.advertise<std_msgs::Float64MultiArray>("/tau_command", 1000);
+    goalpub = nh.advertise<geometry_msgs::PoseStamped>("/goal_pose", 1000);
 
+    dynamic_reconfigure_compliance_param_node_ =
+      ros::NodeHandle(node_handle.getNamespace() + "dynamic_reconfigure_compliance_param_node");
+
+    dynamic_server_compliance_param_ = std::make_unique<
+        dynamic_reconfigure::Server<franka_example_controllers::compliance_paramConfig>>(
+        dynamic_reconfigure_compliance_param_node_);
+    dynamic_server_compliance_param_->setCallback(
+        boost::bind(&JointImpedanceController::complianceParamCallback, this, _1, _2));
+
+    position_d_.setZero();
+    orientation_d_.coeffs() << 0.0, 0.0, 0.0, 1.0;
+    position_d_target_.setZero();
+    orientation_d_target_.coeffs() << 0.0, 0.0, 0.0, 1.0;
+
+    cartesian_stiffness_.setZero();
+    cartesian_damping_.setZero();
+
+    sub_equilibrium_pose_ = node_handle.subscribe(
+      "/goal_pose", 20, &JointImpedanceController::equilibriumPoseCallback, this,
+      ros::TransportHints().reliable().tcpNoDelay());
+
+    //need to change urdf_filename to the path of urdf file in franaka_effort_controller/urdf while using 
+    std::string urdf_filename = "/home/ubuntu/catkin_ws/src/franka_effort_controller/urdf/model.urdf";
+    
+    //Importing model and data for pinocchio 
+    pinocchio::urdf::buildModel(urdf_filename,model);
+    data = pinocchio::Data(model);
+    controlled_frame = model.frames[model.nframes-1].name;
+    
+    
     return true;
 
     }
 
     void JointImpedanceController::starting(const ros::Time& /* time */) {
+    // compute initial velocity with jacobian and set x_attractor and q_d_nullspace
+    // to initial configuration
+    franka::RobotState initial_state = state_handle_->getRobotState();
+    // get jacobian
+    std::array<double, 42> jacobian_array =
+        model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+    // convert to eigen
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
+     //getting the initial position and orientation of the ee 
+    Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(initial_state.O_T_EE.data()));
+    Eigen::Vector3d position_init_(initial_transform.translation());
+    Eigen::Quaterniond orientation_init_(Eigen::Quaterniond(initial_transform.linear()));
+    //converting from quaternion to euler angle 
+    auto euler = orientation_init_.toRotationMatrix().eulerAngles(0, 1, 2);
+
+    // set equilibrium point to current state
+    position_d_ = initial_transform.translation();
+    orientation_d_ = Eigen::Quaterniond(initial_transform.linear());
+    position_d_target_ = initial_transform.translation();
+    orientation_d_target_ = Eigen::Quaterniond(initial_transform.linear());
+   
+    // set nullspace equilibrium configuration to initial q
+    q_d_nullspace_ = q_initial;
+
     //getting the intial time to generate command in update 
-    elapsed_time_ = ros::Duration(0.0);
     beginTime = ros::Time::now(); 
     MessageTime = ros::Duration(5.0);
     endTime = beginTime + MessageTime;
+    //solves for the constants x_0-6 for the six degree polynomial 
+    //T is the end time for the feedforward control 
+    T = MessageTime.toSec(); 
+    // A is a 6*6 matrix consists of f(0);f'(0);f''(0);f(T);f'(T);f''(T)
+    A << 1,0,0,0,0,0,
+         0,1,0,0,0,0, 
+         0,0,2,0,0,0,
+         1,T,pow(T,2),pow(T,3), pow(T,4),pow(T,5),
+         0,1,2*T, 3*pow(T,2), 4*pow(T,3), 5*pow(T,4),
+         0,0,2,6*T, 12*pow(T,2),20*pow(T,3); 
+    // calculating A^-1 
+    Ainv << A.inverse(); 
+    // B_<var> is the vector representation of the initial and end boundary conditions of varable var 
+    // <var>d is the desired end position of var in each direction/orientation 
+    Bx <<  position_init_[0],0,0,xd,0,0;
+    // x<var> is a vector consists of constants we need to solve for on direction <var> 
+    // A*x<var> = B<var> ====> x<var> = A^-1*B<var>
+    xx << Ainv*Bx; 
+    By <<  position_init_[1],0,0,yd,0,0;
+    xy << Ainv*By;
+    Bz <<  position_init_[2],0,0,zd,0,0;
+    xz << Ainv*Bz; 
+    Br <<  euler[0],0,0,euler[0],0,0;
+    xr << Ainv*Br; 
+    Bp <<  euler[1],0,0,euler[1],0,0;
+    xp << Ainv*Bp; 
+    Bya <<  euler[2],0,0,euler[2],0,0;
+    xya << Ainv*Bya; 
+
+
+
 
 
     
@@ -107,97 +190,230 @@ namespace franka_effort_controller {
 
     void JointImpedanceController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
-    std::array<double, 7> qarray  = {0.0,-0.785398,0.0,-2.356194,0.0,1.570796,0.785398};
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> initial_q(qarray.data());
-    std::array<double, 7> garray  = {0.327733, 0.340527, 0.553659, -1.37565, -0.141557, 1.98037, 0.671678};
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> goal_q(garray.data());
-    std::array<double, 42> jacobian_array =
-    model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
-    Eigen::Map<Eigen::Matrix<double, 6, 7>> raw_jacobian(jacobian_array.data());
-    Eigen::Matrix<double, 3, 7> jacobian(raw_jacobian.topRows(3));
-    franka::RobotState robot_state = state_handle_->getRobotState();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-    Eigen::DiagonalMatrix<double, 3>  kp(1, 2, 1);
-    Eigen::DiagonalMatrix<double, 3>  kd(0.5, 0.5, 0.5);
-    Eigen::Matrix<double, 3, 1> desired_pos(0.501,0.503,0.478);
-    std::array<double, 16> robot_pose_ = robot_state.O_T_EE;
-    std::array<double, 7> q = robot_state.q;
-    Eigen::Matrix<double, 3, 1> pos(robot_pose_[12],robot_pose_[13],robot_pose_[14]);
-    Eigen::Matrix<double, 3, 1> pos_diff(desired_pos-pos);
-    Eigen::Matrix<double, 3, 1> delta_dq(jacobian*dq);
-    Eigen::Matrix<double, 3, 1> F = kp*pos_diff-kd*delta_dq;
-    Eigen::Matrix<double, 7, 1> TFb = jacobian.transpose()*F;
-    Eigen::Matrix<double, 7, 1> diff(goal_q-initial_q);
-    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-    Eigen::Vector3d position_d_(transform.translation());
-    Eigen::Quaterniond orientation_d_(Eigen::Quaterniond(transform.linear()));
+    //calculating for the time variable t to use in polynomial 
     ros::Time curTime = ros::Time::now(); 
     ros::Duration passedTime = curTime - beginTime;
+    double t = passedTime.toSec(); 
+     //calculating time vector t_pos, t_vel, t_acc, that could use to calculate the position, velocity, and acceleration of the ee at current time t
+    // by multiplying time vector and the constant vector x<var> that we found previously 
+    Eigen::Matrix<double, 1, 6> tpos {};
+    tpos << 1,t,pow(t,2),pow(t,3), pow(t,4),pow(t,5); 
+    Eigen::Matrix<double, 1, 6> tvel {};
+    tvel << 0,1,2*t, 3*pow(t,2), 4*pow(t,3), 5*pow(t,4); 
+    Eigen::Matrix<double, 1, 6> tacc {};
+    tacc << 0,0,2,6*t, 12*pow(t,2),20*pow(t,3);
 
-    
-    
-    
-    std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
-    std::array<double, 7> gravity_array = model_handle_->getGravity();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
 
-    Eigen::VectorXd tau_d(7);
+    //calculating the position, velocity, acceleration in direction <var> for the ee
+    double x = tpos*xx;
+    double dx = tvel*xx; 
+    double ddx = tacc*xx; 
+    double y = tpos*xy;
+    double dy = tvel*xy; 
+    double ddy = tacc*xy; 
+    double z = tpos*xz;
+    double dz = tvel*xz; 
+    double ddz = tacc*xz;
+    double r = tpos*xr;
+    double dr = tvel*xr; 
+    double ddr = tacc*xr;
+    double p = tpos*xp;
+    double dp = tvel*xp;
+    double ddp = tacc*xp;
+    double ya = tpos*xya;
+    double dya = tvel*xya; 
+    double ddya = tacc*xya;
 
-    //  tau_d << saturateTorqueRate(tau_d, tau_J_d);
+    //concentrating postion, velocity, acceleration varables into vectors respectively 
+    Eigen::Matrix <double,6,1> X{}; 
+    X << x,y,z,r,p,ya;
+    Eigen::Matrix <double,6,1> dX{};
+    dX <<dx,dy,dz,dr,dp,dya;
+    Eigen::Matrix <double,6,1> ddX{};   
+    ddX <<ddx,ddy,ddz,ddr,ddp,ddya;
 
-    if (passedTime.toSec()< MessageTime.toSec()) {
-        Eigen::Matrix<double, 7, 1> q (initial_q + (3*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),2)-2*pow(passedTime.toSec(),3)/pow(MessageTime.toSec(),3))*diff);
-        Eigen::Matrix<double, 7, 1> dq ((6*passedTime.toSec()/pow(MessageTime.toSec(),2)-6*pow(passedTime.toSec(),2)/pow(MessageTime.toSec(),3))*diff);
-        Eigen::Matrix<double, 7, 1> ddq ((6/pow(MessageTime.toSec(),2)-12*passedTime.toSec()/pow(MessageTime.toSec(),3))*diff);
-        std::array<double, 49> mass_array = model_handle_->getMass();
-        Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
-        Eigen::Matrix<double, 7, 1>  TFf(mass*ddq); 
+    franka::RobotState robot_state = state_handle_->getRobotState();
+    Eigen::Affine3d curr_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
 
-        tau_d << coriolis+TFf+TFb;
+    Eigen::Vector3d position_curr_{};
+    position_curr_ << x,y,z; 
+    double cy = cos(ya * 0.5);
+    double sy = sin(ya * 0.5);
+    double cp = cos(p * 0.5);
+    double sp = sin(p * 0.5);
+    double cr = cos(r * 0.5);
+    double sr = sin(r * 0.5);
+    Eigen::Quaterniond Quaternion;
+    Quaternion.w() = cr * cp * cy + sr * sp * sy;
+    Quaternion.x() = sr * cp * cy - cr * sp * sy;
+    Quaternion.y() = cr * sp * cy + sr * cp * sy;
+    Quaternion.z() = cr * cp * sy - sr * sp * cy;
+
+    const int JOINT_ID = 7;
+    const pinocchio::SE3 oMdes(Quaternion, position_curr_);
+    Eigen::VectorXd q = pinocchio::neutral(model);
+    const double eps  = 1e-4;
+    const int IT_MAX  = 1000;
+    const double DT   = 1e-1;
+    const double damp = 1e-6;
+
+    pinocchio::Data::Matrix6x J(6,model.nv);
+    J.setZero();
+
+    bool success = false;
+    typedef Eigen::Matrix<double, 6, 1> Vector6d;
+    Vector6d err;
+    Eigen::VectorXd v(model.nv);
+
+    for (int i=0;;i++){
+     pinocchio::forwardKinematics(model,data,q);
+     const pinocchio::SE3 dMi = oMdes.actInv(data.oMi[JOINT_ID]);
+     err = pinocchio::log6(dMi).toVector();
+     if(err.norm() < eps)
+     {
+       success = true;
+       break;
+     }
+     if (i >= IT_MAX)
+     {
+       success = false;
+       break;
+     }
     }
-    else {
-        tau_d << coriolis+TFb-dq;        
-    }
 
+    //getting jacobian and pseudo jacobian at this time instance
+    pinocchio::getFrameJacobian(model, data, model.getFrameId(controlled_frame), pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, J);
+    pinocchio::Data::Matrix6 JJt;
+    JJt.noalias() = J * J.transpose();
+    JJt.diagonal().array() += damp;
+    v.noalias() = - J.transpose() * JJt.ldlt().solve(err);
+    q = pinocchio::integrate(model,q,v*DT);
+    Eigen::MatrixXd jacobian_pinv;
+    franka_example_controllers::pseudoInverse(J, jacobian_pinv);
+    //getting current joint position and velocity 
+    //dX = Jdq =====> J^{+}dX  = dq 
+    Eigen::Matrix<double, 7, 1> dq(jacobian_pinv*dX); 
 
+    // updating model data for pinocchio and calculating jacobian dot 
+    pinocchio::forwardKinematics(model,data,q,dq,0.0*dq); 
+    pinocchio::updateFramePlacements(model,data);
+    Eigen::Matrix<double, 6, 7> dJ(pinocchio::computeJointJacobiansTimeVariation(model,data,q,dq));
+    Eigen::Matrix<double, 7, 7> coriolism(pinocchio::computeCoriolisMatrix(model,data,q,dq));
+    Eigen::Matrix<double, 7, 1> coriolis(coriolism*dq);
+    std::array<double, 49> mass_array = model_handle_->getMass();
+    Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
 
-    // tau_d << coriolis-20*dq;
+    Eigen::VectorXd tau_forwardd(7);
 
+    //for the ee_pose publisher
+    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+    Eigen::Vector3d position(transform.translation());
+    Eigen::Quaterniond orientation(Eigen::Quaterniond(transform.linear()));
     geometry_msgs::PoseStamped pose;
-    pose.pose.orientation.x = orientation_d_.x();
-    pose.pose.orientation.y = orientation_d_.y();
-    pose.pose.orientation.z = orientation_d_.z();
-    pose.pose.orientation.w = orientation_d_.w();
-    pose.pose.position.x = position_d_[0];
-    pose.pose.position.y = position_d_[1];
-    pose.pose.position.z = position_d_[2];
+    pose.pose.orientation.x = orientation.x();
+    pose.pose.orientation.y = orientation.y();
+    pose.pose.orientation.z = orientation.z();
+    pose.pose.orientation.w = orientation.w();
+    pose.pose.position.x = position[0];
+    pose.pose.position.y = position[1];
+    pose.pose.position.z = position[2];
+    pose.header.stamp = ros::Time::now(); 
     pospub.publish(pose);
 
+    //for the goal_pose publisher
+    geometry_msgs::PoseStamped goalpose;
+    goalpose.pose.orientation.x = Quaternion.x();
+    goalpose.pose.orientation.y = Quaternion.y();
+    goalpose.pose.orientation.z = Quaternion.z();
+    goalpose.pose.orientation.w = Quaternion.w();
+    goalpose.pose.position.x = x;
+    goalpose.pose.position.y = y;
+    goalpose.pose.position.z = z;
+    goalpose.header.stamp = ros::Time::now(); 
+    goalpub.publish(goalpose);
 
+    if (passedTime.toSec()< MessageTime.toSec()) {
+        //ddX = Jdq+Jddq ====> ddX-Jdq = Jddq =====> J^{+} (ddX-Jdq) = ddq ========>MJ^{+}(ddX-Jdq) = Mddq = TF 
+        Eigen::Matrix<double, 7, 1>  TF(mass*jacobian_pinv*(ddX-dJ*dq)); 
+        tau_forwardd << TF+coriolis;
+    }
+    else {
+        tau_forwardd<< coriolis;       
+    }
 
-     for (size_t i = 0; i < 7; ++i) {
+    std::array<double, 42> jacobian_array =
+    model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+    Eigen::Map<Eigen::Matrix<double, 6, 7>> hjacobian(jacobian_array.data());
+     std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> hcoriolis(coriolis_array.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> hq(robot_state.q.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> hdq(robot_state.dq.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(  // NOLINT (readability-identifier-naming)
+      robot_state.tau_J_d.data());
+    Eigen::Matrix<double, 6, 1> error;
+    error.head(3) << position - position_d_;
+
+    // orientation error
+    if (orientation_d_.coeffs().dot(orientation.coeffs()) < 0.0) {
+        orientation.coeffs() << -orientation.coeffs();
+    }
+    // "difference" quaternion
+    Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);
+    error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+    // Transform to base frame
+    error.tail(3) << -transform.linear() * error.tail(3);
+
+    // compute control
+    // allocate variables
+    Eigen::VectorXd tau_task(7), tau_nullspace(7), htau_d(7), tau_d(7);
+
+    Eigen::MatrixXd jacobian_transpose_pinv;
+    franka_example_controllers::pseudoInverse(hjacobian.transpose(), jacobian_transpose_pinv);
+
+    tau_task << hjacobian.transpose() *
+                  (-cartesian_stiffness_ * error - cartesian_damping_ * (hjacobian * hdq));
+  // nullspace PD control with damping ratio = 1
+    tau_nullspace << (Eigen::MatrixXd::Identity(7, 7) -
+                        hjacobian.transpose() * jacobian_transpose_pinv) *
+                        (nullspace_stiffness_ * (q_d_nullspace_ - hq) -
+                            (2.0 * sqrt(nullspace_stiffness_)) * hdq);
+
+    if (passedTime.toSec()< MessageTime.toSec()) {
+        htau_d << tau_task + tau_nullspace;
+        htau_d << saturateTorqueRate(htau_d, tau_J_d);
+        tau_d << htau_d + tau_forwardd; 
+    }
+    else {
+        tau_d<< tau_forwardd;       
+    }
+ 
+    //for the tau_command publisher 
+    std_msgs::Float64MultiArray tau; 
+    for (size_t i = 0; i < 7; ++i) {
+         tau.data.push_back(tau_d[i]);
+     }
+    torquepub.publish(tau);
+
+    for (size_t i = 0; i < 7; ++i) {
          joint_handles_[i].setCommand(tau_d[i]);
      }
 
-        
+    cartesian_stiffness_ =
+      filter_params_ * cartesian_stiffness_target_ + (1.0 - filter_params_) * cartesian_stiffness_;
+    cartesian_damping_ =
+        filter_params_ * cartesian_damping_target_ + (1.0 - filter_params_) * cartesian_damping_;
+    nullspace_stiffness_ =
+        filter_params_ * nullspace_stiffness_target_ + (1.0 - filter_params_) * nullspace_stiffness_;
+    std::lock_guard<std::mutex> position_d_target_mutex_lock(
+        position_and_orientation_d_target_mutex_);
+    position_d_ = filter_params_ * position_d_target_ + (1.0 - filter_params_) * position_d_;
+    orientation_d_ = orientation_d_.slerp(filter_params_, orientation_d_target_);
+    
 
 
-    //sending a fix command of message 
-    // double tau_d_saturated[] {10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0};
-    // for (size_t i = 0; i < 7; ++i) {
-    //     joint_handles_[i].setCommand(tau_d_saturated[i]);
-    // }
-    // updating time 
-    // elapsed_time_ += period;
 
-    //calculating torque to send command 
-    // double torque = (std::cos( elapsed_time_.toSec())) * 10;
-    //sending the command to each joint by joint_handles_ 
-    // double tau_d_saturated[] {torque, torque, torque, torque, torque, torque, torque};
-    // for (size_t i = 0; i < 7; ++i) {
-    //     joint_handles_[i].setCommand(tau_d_saturated[i]);
-    // }
+
+
 
     
 
@@ -213,6 +429,36 @@ namespace franka_effort_controller {
     }
     return tau_d_saturated;
 }
+
+    void JointImpedanceController::complianceParamCallback(
+        franka_example_controllers::compliance_paramConfig& config,
+        uint32_t /*level*/) {
+    cartesian_stiffness_target_.setIdentity();
+    cartesian_stiffness_target_.topLeftCorner(3, 3)
+        << config.translational_stiffness * Eigen::Matrix3d::Identity();
+    cartesian_stiffness_target_.bottomRightCorner(3, 3)
+        << config.rotational_stiffness * Eigen::Matrix3d::Identity();
+    cartesian_damping_target_.setIdentity();
+    // Damping ratio = 1
+    cartesian_damping_target_.topLeftCorner(3, 3)
+        << 2.0 * sqrt(config.translational_stiffness) * Eigen::Matrix3d::Identity();
+    cartesian_damping_target_.bottomRightCorner(3, 3)
+        << 2.0 * sqrt(config.rotational_stiffness) * Eigen::Matrix3d::Identity();
+    nullspace_stiffness_target_ = config.nullspace_stiffness;
+    }
+
+    void JointImpedanceController::equilibriumPoseCallback(
+    const geometry_msgs::PoseStampedConstPtr& msg) {
+    std::lock_guard<std::mutex> position_d_target_mutex_lock(
+        position_and_orientation_d_target_mutex_);
+    position_d_target_ << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
+    Eigen::Quaterniond last_orientation_d_target(orientation_d_target_);
+    orientation_d_target_.coeffs() << msg->pose.orientation.x, msg->pose.orientation.y,
+        msg->pose.orientation.z, msg->pose.orientation.w;
+    if (last_orientation_d_target.coeffs().dot(orientation_d_target_.coeffs()) < 0.0) {
+        orientation_d_target_.coeffs() << -orientation_d_target_.coeffs();
+    }
+    }
 
 }
 

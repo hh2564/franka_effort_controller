@@ -134,6 +134,7 @@ namespace franka_effort_controller {
     q_d_nullspace_ = q_initial;
 
 
+
     
 
     
@@ -142,6 +143,19 @@ namespace franka_effort_controller {
 
     void FeedbackController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
+    ros::NodeHandle nh;
+    ros::Publisher pub = nh.advertise<geometry_msgs::PoseStamped>("/panda_feedback_controllers/equilibrium_pose", 1000);
+
+    geometry_msgs::PoseStamped gpose;
+    gpose.pose.orientation.x = orientation_d_.x();
+    gpose.pose.orientation.y = orientation_d_.y();
+    gpose.pose.orientation.z = orientation_d_.z();
+    gpose.pose.orientation.w = orientation_d_.w();
+    gpose.pose.position.x = 0.5;
+    gpose.pose.position.y = 0.5;
+    gpose.pose.position.z = 0.5;
+    gpose.header.stamp = ros::Time::now(); 
+    pub.publish(gpose);
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
     Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
