@@ -108,7 +108,7 @@ namespace franka_effort_controller {
       ros::TransportHints().reliable().tcpNoDelay());
 
     //need to change urdf_filename to the path of urdf file in franaka_effort_controller/urdf while using 
-    std::string urdf_filename = "/home/ubuntu/catkin_ws/src/franka_effort_controller/urdf/model.urdf";
+    std::string urdf_filename = "/home/crrl/pin_ws/src/franka_effort_controller/urdf/model.urdf";
     
     //Importing model and data for pinocchio 
     pinocchio::urdf::buildModel(urdf_filename,model);
@@ -381,10 +381,10 @@ namespace franka_effort_controller {
     if (passedTime.toSec()< MessageTime.toSec()) {
         htau_d << tau_task + tau_nullspace;
         htau_d << saturateTorqueRate(htau_d, tau_J_d);
-        tau_d << htau_d + tau_forwardd; 
+        tau_d << mass*(jacobian_pinv*(ddX-dJ*dq)+htau_d)+hcoriolis; 
     }
     else {
-        tau_d<< tau_forwardd;       
+        tau_d<< hcoriolis;       
     }
  
     //for the tau_command publisher 
@@ -399,14 +399,14 @@ namespace franka_effort_controller {
      }
 
     cartesian_stiffness_ =
-      filter_params_ * cartesian_stiffness_target_ + (1.0 - filter_params_) * cartesian_stiffness_;
+      filter_params_ * cartesian_stiffness_target_ + (0.65 - filter_params_) * cartesian_stiffness_;
     cartesian_damping_ =
-        filter_params_ * cartesian_damping_target_ + (1.0 - filter_params_) * cartesian_damping_;
+        filter_params_ * cartesian_damping_target_ + (0.65 - filter_params_) * cartesian_damping_;
     nullspace_stiffness_ =
-        filter_params_ * nullspace_stiffness_target_ + (1.0 - filter_params_) * nullspace_stiffness_;
+        filter_params_ * nullspace_stiffness_target_ + (0.65 - filter_params_) * nullspace_stiffness_;
     std::lock_guard<std::mutex> position_d_target_mutex_lock(
         position_and_orientation_d_target_mutex_);
-    position_d_ = filter_params_ * position_d_target_ + (1.0 - filter_params_) * position_d_;
+    position_d_ = filter_params_ * position_d_target_ + (0.65 - filter_params_) * position_d_;
     orientation_d_ = orientation_d_.slerp(filter_params_, orientation_d_target_);
     
 

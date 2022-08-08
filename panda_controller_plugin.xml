@@ -3,7 +3,7 @@
          type="franka_effort_controller::JointImpedanceController"
          base_class_type="controller_interface::ControllerBase">
     <description>
-      Joint impedance controller for Franka 
+      Feedforward-feedback controller for Franka 
     </description>
   </class>
   <class name="franka_effort_controller/FeedforwardController"
@@ -13,11 +13,18 @@
       Feedforward controller for Franka 
     </description>
   </class>
+  <class name="franka_effort_controller/FeedforwardController2"
+         type="franka_effort_controller::FeedforwardController2"
+         base_class_type="controller_interface::ControllerBase">
+    <description>
+      Feedforward controller for Franka 
+    </description>
+  </class>
   <class name="franka_effort_controller/FeedbackController"
          type="franka_effort_controller::FeedbackController"
          base_class_type="controller_interface::ControllerBase">
     <description>
-      Feedforward controller for Franka 
+      Feedback controller for Franka 
     </description>
   </class>
 </library>

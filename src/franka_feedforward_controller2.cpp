@@ -1,4 +1,4 @@
-#include <franka_effort_controller/franka_feedforward_controller.h>
+#include <franka_effort_controller/franka_feedforward_controller2.h>
 
 #include <cmath>
 #include <memory>
@@ -13,7 +13,7 @@
 
 
 namespace franka_effort_controller {
-    bool FeedforwardController::init(hardware_interface::RobotHW* robot_hw,
+    bool FeedforwardController2::init(hardware_interface::RobotHW* robot_hw,
                                            ros::NodeHandle& node_handle) {
     std::string arm_id;
     if (!node_handle.getParam("arm_id", arm_id)) {
@@ -97,7 +97,7 @@ namespace franka_effort_controller {
 
     }
 
-    void FeedforwardController::starting(const ros::Time& /* time */) {
+    void FeedforwardController2::starting(const ros::Time& /* time */) {
     //getting the intial time to generate command in update 
     beginTime = ros::Time::now(); 
     MessageTime = ros::Duration(5.0);
@@ -146,7 +146,7 @@ namespace franka_effort_controller {
 
     }
 
-    void FeedforwardController::update(const ros::Time& /*time*/,
+    void FeedforwardController2::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
     //calculating for the time variable t to use in polynomial 
     ros::Time curTime = ros::Time::now(); 
@@ -190,13 +190,6 @@ namespace franka_effort_controller {
     Eigen::Matrix <double,6,1> ddX{};   
     ddX <<ddx,ddy,ddz,ddr,ddp,ddya;
 
-
-    franka::RobotState robot_state = state_handle_->getRobotState();
-    Eigen::Affine3d curr_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-
-
-
-
     Eigen::Vector3d position_curr_{};
     position_curr_ << x,y,z; 
     double cy = cos(ya * 0.5);
@@ -211,62 +204,31 @@ namespace franka_effort_controller {
     Quaternion.y() = cr * sp * cy + sr * cp * sy;
     Quaternion.z() = cr * cp * sy - sr * sp * cy;
 
-    
-    const int JOINT_ID = 7;
-    const pinocchio::SE3 oMdes(Quaternion, position_curr_);
-    Eigen::VectorXd q = pinocchio::neutral(model);
-    const double eps  = 1e-4;
-    const int IT_MAX  = 1000;
-    const double DT   = 1e-1;
-    const double damp = 1e-6;
 
-    pinocchio::Data::Matrix6x J(6,model.nv);
-    J.setZero();
-
-    bool success = false;
-    typedef Eigen::Matrix<double, 6, 1> Vector6d;
-    Vector6d err;
-    Eigen::VectorXd v(model.nv);
-
-    for (int i=0;;i++){
-     pinocchio::forwardKinematics(model,data,q);
-     const pinocchio::SE3 dMi = oMdes.actInv(data.oMi[JOINT_ID]);
-     err = pinocchio::log6(dMi).toVector();
-     if(err.norm() < eps)
-     {
-       success = true;
-       break;
-     }
-     if (i >= IT_MAX)
-     {
-       success = false;
-       break;
-     }
-    }
-
-    //getting jacobian and pseudo jacobian at this time instance
-    pinocchio::getFrameJacobian(model, data, model.getFrameId(controlled_frame), pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, J);
-    pinocchio::Data::Matrix6 JJt;
-    JJt.noalias() = J * J.transpose();
-    JJt.diagonal().array() += damp;
-    v.noalias() = - J.transpose() * JJt.ldlt().solve(err);
-    q = pinocchio::integrate(model,q,v*DT);
+    franka::RobotState robot_state = state_handle_->getRobotState();
+    Eigen::Affine3d curr_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
+    std::array<double, 42> jacobian_array =
+    model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+    Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+    std::array<double, 49> mass_array = model_handle_->getMass();
+    Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data());
     Eigen::MatrixXd jacobian_pinv;
-    franka_example_controllers::pseudoInverse(J, jacobian_pinv);
-    //getting current joint position and velocity 
-    //dX = Jdq =====> J^{+}dX  = dq 
-    Eigen::Matrix<double, 7, 1> dq(jacobian_pinv*dX); 
+    franka_example_controllers::pseudoInverse(jacobian, jacobian_pinv);
+    std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
+
+ 
+    
+
+    
 
     // updating model data for pinocchio and calculating jacobian dot 
     pinocchio::forwardKinematics(model,data,q,dq,0.0*dq); 
     pinocchio::updateFramePlacements(model,data);
-    pinocchio::computeMinverse(model,data,q);
-    data.Minv.triangularView<Eigen::StrictlyLower>() = data.Minv.transpose().triangularView<Eigen::StrictlyLower>();
     Eigen::Matrix<double, 6, 7> dJ(pinocchio::computeJointJacobiansTimeVariation(model,data,q,dq));
-    Eigen::Matrix<double, 7, 7> coriolism(pinocchio::computeCoriolisMatrix(model,data,q,dq));
-    Eigen::Matrix<double, 7, 1> coriolis(coriolism*dq);
-    std::array<double, 49> mass_array = model_handle_->getMass();
-    Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
+
 
     Eigen::VectorXd tau_d(7);
 
@@ -326,5 +288,5 @@ namespace franka_effort_controller {
 
 }
 
-PLUGINLIB_EXPORT_CLASS(franka_effort_controller::FeedforwardController,
+PLUGINLIB_EXPORT_CLASS(franka_effort_controller::FeedforwardController2,
                        controller_interface::ControllerBase)
