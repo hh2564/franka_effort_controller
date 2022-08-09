@@ -1,4 +1,4 @@
-#include <franka_effort_controller/franka_effort_controller.h>
+#include <franka_effort_controller/feedback_linearization_controller.h>
 
 #include <cmath>
 #include <memory>
@@ -11,33 +11,33 @@
 #include <franka/robot_state.h>
 
 namespace franka_effort_controller {
-    bool JointImpedanceController::init(hardware_interface::RobotHW* robot_hw,
+    bool FeedbackLinearizationController::init(hardware_interface::RobotHW* robot_hw,
                                            ros::NodeHandle& node_handle) {
     //checking to see if the default parameters can be access through node handle
     //and also getting information and interfaces  
     std::string arm_id;
     if (!node_handle.getParam("arm_id", arm_id)) {
-        ROS_ERROR("JointImpedanceController: Could not read parameter arm_id");
+        ROS_ERROR("FeedbackLinearizationController: Could not read parameter arm_id");
         return false;
     }
     std::vector<std::string> joint_names;
     if (!node_handle.getParam("joint_names", joint_names) || joint_names.size() != 7) {
         ROS_ERROR(
-            "JointImpedanceController: Invalid or no joint_names parameters provided, aborting "
+            "FeedbackLinearizationController: Invalid or no joint_names parameters provided, aborting "
             "controller init!");
         return false;
     }
 
     double publish_rate(30.0);
     if (!node_handle.getParam("publish_rate", publish_rate)) {
-        ROS_INFO_STREAM("JointImpedanceController: publish_rate not found. Defaulting to "
+        ROS_INFO_STREAM("FeedbackLinearizationController: publish_rate not found. Defaulting to "
                         << publish_rate);
     }
    
     auto* effort_joint_interface = robot_hw->get<hardware_interface::EffortJointInterface>();
     if (effort_joint_interface == nullptr) {
         ROS_ERROR_STREAM(
-            "JointImpedanceController: Error getting effort joint interface from hardware");
+            "FeedbackLinearizationController: Error getting effort joint interface from hardware");
         return false;
     }
     for (size_t i = 0; i < 7; ++i) {
@@ -45,14 +45,14 @@ namespace franka_effort_controller {
         joint_handles_.push_back(effort_joint_interface->getHandle(joint_names[i]));
         } catch (const hardware_interface::HardwareInterfaceException& ex) {
         ROS_ERROR_STREAM(
-            "JointImpedanceController: Exception getting joint handles: " << ex.what());
+            "FeedbackLinearizationController: Exception getting joint handles: " << ex.what());
         return false;
         }
     }
     auto* state_interface = robot_hw->get<franka_hw::FrankaStateInterface>();
     if (state_interface == nullptr) {
         ROS_ERROR_STREAM(
-            "JointImpedanceController: Error getting state interface from hardware");
+            "FeedbackLinearizationController: Error getting state interface from hardware");
         return false;
     }
     try {
@@ -60,14 +60,14 @@ namespace franka_effort_controller {
             state_interface->getHandle(arm_id + "_robot"));
     } catch (hardware_interface::HardwareInterfaceException& ex) {
         ROS_ERROR_STREAM(
-            "JointImpedanceController: Exception getting state handle from interface: "
+            "FeedbackLinearizationController: Exception getting state handle from interface: "
             << ex.what());
         return false;
     }
     auto* model_interface = robot_hw->get<franka_hw::FrankaModelInterface>();
     if (model_interface == nullptr) {
         ROS_ERROR_STREAM(
-            "JointImpedanceController: Error getting model interface from hardware");
+            "FeedbackLinearizationController: Error getting model interface from hardware");
         return false;
     }
     try {
@@ -75,7 +75,7 @@ namespace franka_effort_controller {
             model_interface->getHandle(arm_id + "_model"));
     } catch (hardware_interface::HardwareInterfaceException& ex) {
         ROS_ERROR_STREAM(
-            "JointImpedanceController: Exception getting model handle from interface: "
+            "FeedbackLinearizationController: Exception getting model handle from interface: "
             << ex.what());
         return false;
     }
@@ -90,10 +90,10 @@ namespace franka_effort_controller {
       ros::NodeHandle(node_handle.getNamespace() + "dynamic_reconfigure_compliance_param_node");
 
     dynamic_server_compliance_param_ = std::make_unique<
-        dynamic_reconfigure::Server<franka_example_controllers::compliance_paramConfig>>(
+        dynamic_reconfigure::Server<panda_controller::compliance_paramConfig>>(
         dynamic_reconfigure_compliance_param_node_);
     dynamic_server_compliance_param_->setCallback(
-        boost::bind(&JointImpedanceController::complianceParamCallback, this, _1, _2));
+        boost::bind(&FeedbackLinearizationController::complianceParamCallback, this, _1, _2));
 
     position_d_.setZero();
     orientation_d_.coeffs() << 0.0, 0.0, 0.0, 1.0;
@@ -104,7 +104,7 @@ namespace franka_effort_controller {
     cartesian_damping_.setZero();
 
     sub_equilibrium_pose_ = node_handle.subscribe(
-      "/goal_pose", 20, &JointImpedanceController::equilibriumPoseCallback, this,
+      "/goal_pose", 20, &FeedbackLinearizationController::equilibriumPoseCallback, this,
       ros::TransportHints().reliable().tcpNoDelay());
 
     //need to change urdf_filename to the path of urdf file in franaka_effort_controller/urdf while using 
@@ -120,7 +120,7 @@ namespace franka_effort_controller {
 
     }
 
-    void JointImpedanceController::starting(const ros::Time& /* time */) {
+    void FeedbackLinearizationController::starting(const ros::Time& /* time */) {
     // compute initial velocity with jacobian and set x_attractor and q_d_nullspace
     // to initial configuration
     franka::RobotState initial_state = state_handle_->getRobotState();
@@ -188,7 +188,7 @@ namespace franka_effort_controller {
     }
 
 
-    void JointImpedanceController::update(const ros::Time& /*time*/,
+    void FeedbackLinearizationController::update(const ros::Time& /*time*/,
                                              const ros::Duration& period) {
     //calculating for the time variable t to use in polynomial 
     ros::Time curTime = ros::Time::now(); 
@@ -233,7 +233,6 @@ namespace franka_effort_controller {
     ddX <<ddx,ddy,ddz,ddr,ddp,ddya;
 
     franka::RobotState robot_state = state_handle_->getRobotState();
-    Eigen::Affine3d curr_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
 
     Eigen::Vector3d position_curr_{};
     position_curr_ << x,y,z; 
@@ -244,66 +243,11 @@ namespace franka_effort_controller {
     double cr = cos(r * 0.5);
     double sr = sin(r * 0.5);
     Eigen::Quaterniond Quaternion;
+
     Quaternion.w() = cr * cp * cy + sr * sp * sy;
     Quaternion.x() = sr * cp * cy - cr * sp * sy;
     Quaternion.y() = cr * sp * cy + sr * cp * sy;
     Quaternion.z() = cr * cp * sy - sr * sp * cy;
-
-    const int JOINT_ID = 7;
-    const pinocchio::SE3 oMdes(Quaternion, position_curr_);
-    Eigen::VectorXd q = pinocchio::neutral(model);
-    const double eps  = 1e-4;
-    const int IT_MAX  = 1000;
-    const double DT   = 1e-1;
-    const double damp = 1e-6;
-
-    pinocchio::Data::Matrix6x J(6,model.nv);
-    J.setZero();
-
-    bool success = false;
-    typedef Eigen::Matrix<double, 6, 1> Vector6d;
-    Vector6d err;
-    Eigen::VectorXd v(model.nv);
-
-    for (int i=0;;i++){
-     pinocchio::forwardKinematics(model,data,q);
-     const pinocchio::SE3 dMi = oMdes.actInv(data.oMi[JOINT_ID]);
-     err = pinocchio::log6(dMi).toVector();
-     if(err.norm() < eps)
-     {
-       success = true;
-       break;
-     }
-     if (i >= IT_MAX)
-     {
-       success = false;
-       break;
-     }
-    }
-
-    //getting jacobian and pseudo jacobian at this time instance
-    pinocchio::getFrameJacobian(model, data, model.getFrameId(controlled_frame), pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, J);
-    pinocchio::Data::Matrix6 JJt;
-    JJt.noalias() = J * J.transpose();
-    JJt.diagonal().array() += damp;
-    v.noalias() = - J.transpose() * JJt.ldlt().solve(err);
-    q = pinocchio::integrate(model,q,v*DT);
-    Eigen::MatrixXd jacobian_pinv;
-    franka_example_controllers::pseudoInverse(J, jacobian_pinv);
-    //getting current joint position and velocity 
-    //dX = Jdq =====> J^{+}dX  = dq 
-    Eigen::Matrix<double, 7, 1> dq(jacobian_pinv*dX); 
-
-    // updating model data for pinocchio and calculating jacobian dot 
-    pinocchio::forwardKinematics(model,data,q,dq,0.0*dq); 
-    pinocchio::updateFramePlacements(model,data);
-    Eigen::Matrix<double, 6, 7> dJ(pinocchio::computeJointJacobiansTimeVariation(model,data,q,dq));
-    Eigen::Matrix<double, 7, 7> coriolism(pinocchio::computeCoriolisMatrix(model,data,q,dq));
-    Eigen::Matrix<double, 7, 1> coriolis(coriolism*dq);
-    std::array<double, 49> mass_array = model_handle_->getMass();
-    Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
-
-    Eigen::VectorXd tau_forwardd(7);
 
     //for the ee_pose publisher
     Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
@@ -322,37 +266,41 @@ namespace franka_effort_controller {
 
     //for the goal_pose publisher
     geometry_msgs::PoseStamped goalpose;
-    goalpose.pose.orientation.x = Quaternion.x();
-    goalpose.pose.orientation.y = Quaternion.y();
-    goalpose.pose.orientation.z = Quaternion.z();
-    goalpose.pose.orientation.w = Quaternion.w();
-    goalpose.pose.position.x = x;
-    goalpose.pose.position.y = y;
-    goalpose.pose.position.z = z;
-    goalpose.header.stamp = ros::Time::now(); 
-    goalpub.publish(goalpose);
-
     if (passedTime.toSec()< MessageTime.toSec()) {
-        //ddX = Jdq+Jddq ====> ddX-Jdq = Jddq =====> J^{+} (ddX-Jdq) = ddq ========>MJ^{+}(ddX-Jdq) = Mddq = TF 
-        Eigen::Matrix<double, 7, 1>  TF(mass*jacobian_pinv*(ddX-dJ*dq)); 
-        tau_forwardd << TF+coriolis;
+        goalpose.pose.orientation.x = Quaternion.x();
+        goalpose.pose.orientation.y = Quaternion.y();
+        goalpose.pose.orientation.z = Quaternion.z();
+        goalpose.pose.orientation.w = Quaternion.w();
+        goalpose.pose.position.x = x;
+        goalpose.pose.position.y = y;
+        goalpose.pose.position.z = z;
+        goalpose.header.stamp = ros::Time::now(); 
     }
     else {
-        tau_forwardd<< coriolis;       
+        goalpose.pose.orientation.x = Quaternion.x();
+        goalpose.pose.orientation.y = Quaternion.y();
+        goalpose.pose.orientation.z = Quaternion.z();
+        goalpose.pose.orientation.w = Quaternion.w();
+        goalpose.pose.position.x = 0.5;
+        goalpose.pose.position.y = 0.5;
+        goalpose.pose.position.z = 0.5;
+        goalpose.header.stamp = ros::Time::now();      
     }
+
+    goalpub.publish(goalpose);
 
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
-    Eigen::Map<Eigen::Matrix<double, 6, 7>> hjacobian(jacobian_array.data());
+    Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
      std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> hcoriolis(coriolis_array.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> hq(robot_state.q.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> hdq(robot_state.dq.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(  // NOLINT (readability-identifier-naming)
       robot_state.tau_J_d.data());
     Eigen::Matrix<double, 6, 1> error;
     error.head(3) << position - position_d_;
-
+    
     // orientation error
     if (orientation_d_.coeffs().dot(orientation.coeffs()) < 0.0) {
         orientation.coeffs() << -orientation.coeffs();
@@ -363,29 +311,55 @@ namespace franka_effort_controller {
     // Transform to base frame
     error.tail(3) << -transform.linear() * error.tail(3);
 
+
+//     //getting jacobian and pseudo jacobian at this time instance
+    Eigen::MatrixXd jacobian_pinv;
+    franka_example_controllers::pseudoInverse(jacobian, jacobian_pinv);
+
+
+
+//     // updating model data for pinocchio and calculating jacobian dot 
+    pinocchio::forwardKinematics(model,data,q,dq,0.0*dq); 
+    pinocchio::updateFramePlacements(model,data);
+    Eigen::Matrix<double, 6, 7> dJ(pinocchio::computeJointJacobiansTimeVariation(model,data,q,dq));
+
+
+
+    std::array<double, 49> mass_array = model_handle_->getMass();
+    Eigen::Map<Eigen::Matrix<double, 7, 7>> mass(mass_array.data()); 
+
+    
+
+    Eigen::VectorXd deltaq(7), deltadq(7), xdot(6), ddotqdes(7);
+    xdot << jacobian*dq; 
+    deltaq << jacobian_pinv*error; 
+    deltadq << jacobian_pinv*(xdot - dX); 
+    ddotqdes << jacobian_pinv*(ddX-dJ*dq); 
+
+
     // compute control
     // allocate variables
-    Eigen::VectorXd tau_task(7), tau_nullspace(7), htau_d(7), tau_d(7);
+    Eigen::VectorXd task(7), nullspace(7),tau_d(7);
 
     Eigen::MatrixXd jacobian_transpose_pinv;
-    franka_example_controllers::pseudoInverse(hjacobian.transpose(), jacobian_transpose_pinv);
+    franka_example_controllers::pseudoInverse(jacobian.transpose(), jacobian_transpose_pinv);
 
-    tau_task << hjacobian.transpose() *
-                  (-cartesian_stiffness_ * error - cartesian_damping_ * (hjacobian * hdq));
+    task << jacobian_pinv *
+                  (-cartesian_stiffness_ * error - cartesian_damping_ * (xdot - dX));
   // nullspace PD control with damping ratio = 1
-    tau_nullspace << (Eigen::MatrixXd::Identity(7, 7) -
-                        hjacobian.transpose() * jacobian_transpose_pinv) *
-                        (nullspace_stiffness_ * (q_d_nullspace_ - hq) -
-                            (2.0 * sqrt(nullspace_stiffness_)) * hdq);
+    nullspace << (Eigen::MatrixXd::Identity(7, 7) -
+                        jacobian.transpose() * jacobian_transpose_pinv) *
+                        (nullspace_stiffness_ * (q_d_nullspace_ - q) -
+                            (2.0 * sqrt(nullspace_stiffness_)) * dq);
 
     if (passedTime.toSec()< MessageTime.toSec()) {
-        htau_d << tau_task + tau_nullspace;
-        htau_d << saturateTorqueRate(htau_d, tau_J_d);
-        tau_d << mass*(jacobian_pinv*(ddX-dJ*dq)+htau_d)+hcoriolis; 
+        tau_d << mass*(ddotqdes+nullspace+task)+coriolis; 
     }
     else {
-        tau_d<< hcoriolis;       
+        tau_d << coriolis-10*dq;
+  
     }
+    
  
     //for the tau_command publisher 
     std_msgs::Float64MultiArray tau; 
@@ -418,7 +392,7 @@ namespace franka_effort_controller {
     
 
     }
-    Eigen::Matrix<double, 7, 1> JointImpedanceController::saturateTorqueRate(
+    Eigen::Matrix<double, 7, 1> FeedbackLinearizationController::saturateTorqueRate(
         const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
         const Eigen::Matrix<double, 7, 1>& tau_J_d) {  // NOLINT (readability-identifier-naming)
     Eigen::Matrix<double, 7, 1> tau_d_saturated{};
@@ -430,8 +404,8 @@ namespace franka_effort_controller {
     return tau_d_saturated;
 }
 
-    void JointImpedanceController::complianceParamCallback(
-        franka_example_controllers::compliance_paramConfig& config,
+    void FeedbackLinearizationController::complianceParamCallback(
+        panda_controller::compliance_paramConfig& config,
         uint32_t /*level*/) {
     cartesian_stiffness_target_.setIdentity();
     cartesian_stiffness_target_.topLeftCorner(3, 3)
@@ -447,7 +421,7 @@ namespace franka_effort_controller {
     nullspace_stiffness_target_ = config.nullspace_stiffness;
     }
 
-    void JointImpedanceController::equilibriumPoseCallback(
+    void FeedbackLinearizationController::equilibriumPoseCallback(
     const geometry_msgs::PoseStampedConstPtr& msg) {
     std::lock_guard<std::mutex> position_d_target_mutex_lock(
         position_and_orientation_d_target_mutex_);
@@ -462,5 +436,5 @@ namespace franka_effort_controller {
 
 }
 
-PLUGINLIB_EXPORT_CLASS(franka_effort_controller::JointImpedanceController,
+PLUGINLIB_EXPORT_CLASS(franka_effort_controller::FeedbackLinearizationController,
                        controller_interface::ControllerBase)

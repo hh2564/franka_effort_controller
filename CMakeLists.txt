@@ -34,6 +34,9 @@ find_package(catkin REQUIRED COMPONENTS
   urdf
   visualization_msgs
 )
+generate_dynamic_reconfigure_options(
+  cfg/compliance_param.cfg
+)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -179,7 +182,8 @@ add_library(franka_effort_controller
   src/franka_effort_controller.cpp
   src/franka_feedback_controller.cpp
   src/franka_feedforward_controller.cpp
-  # src/franka_feedforward_controller2.cpp
+  src/franka_feedforward_controller2.cpp
+  src/feedback_linearization_controller.cpp
 )
 
 add_dependencies(franka_effort_controller
@@ -187,6 +191,7 @@ add_dependencies(franka_effort_controller
   ${catkin_EXPORTED_TARGETS}
   ${PROJECT_NAME}_generate_messages_cpp
   ${PROJECT_NAME}_gencpp
+  ${PROJECT_NAME}_gencfg
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -204,6 +209,8 @@ target_include_directories(franka_effort_controller SYSTEM PUBLIC
 target_include_directories(franka_effort_controller PUBLIC
   include
 )
+
+
 
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}

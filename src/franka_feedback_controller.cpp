@@ -172,7 +172,7 @@ namespace franka_effort_controller {
 
 
     Eigen::Matrix<double, 6, 1> error;
-    error.head(3) << position - position_d_;
+    error.head(3) << position_d_ - position;
 
     // orientation error
     if (orientation_d_.coeffs().dot(orientation.coeffs()) < 0.0) {
