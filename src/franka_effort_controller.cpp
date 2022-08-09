@@ -322,24 +322,29 @@ namespace franka_effort_controller {
 
     //for the goal_pose publisher
     geometry_msgs::PoseStamped goalpose;
-    goalpose.pose.orientation.x = Quaternion.x();
-    goalpose.pose.orientation.y = Quaternion.y();
-    goalpose.pose.orientation.z = Quaternion.z();
-    goalpose.pose.orientation.w = Quaternion.w();
-    goalpose.pose.position.x = x;
-    goalpose.pose.position.y = y;
-    goalpose.pose.position.z = z;
-    goalpose.header.stamp = ros::Time::now(); 
-    goalpub.publish(goalpose);
-
     if (passedTime.toSec()< MessageTime.toSec()) {
-        //ddX = Jdq+Jddq ====> ddX-Jdq = Jddq =====> J^{+} (ddX-Jdq) = ddq ========>MJ^{+}(ddX-Jdq) = Mddq = TF 
-        Eigen::Matrix<double, 7, 1>  TF(mass*jacobian_pinv*(ddX-dJ*dq)); 
-        tau_forwardd << TF+coriolis;
+        goalpose.pose.orientation.x = Quaternion.x();
+        goalpose.pose.orientation.y = Quaternion.y();
+        goalpose.pose.orientation.z = Quaternion.z();
+        goalpose.pose.orientation.w = Quaternion.w();
+        goalpose.pose.position.x = x;
+        goalpose.pose.position.y = y;
+        goalpose.pose.position.z = z;
+        goalpose.header.stamp = ros::Time::now(); 
     }
     else {
-        tau_forwardd<< coriolis;       
+        goalpose.pose.orientation.x = Quaternion.x();
+        goalpose.pose.orientation.y = Quaternion.y();
+        goalpose.pose.orientation.z = Quaternion.z();
+        goalpose.pose.orientation.w = Quaternion.w();
+        goalpose.pose.position.x = 0.5;
+        goalpose.pose.position.y = 0.5;
+        goalpose.pose.position.z = 0.5;
+        goalpose.header.stamp = ros::Time::now();      
     }
+
+    goalpub.publish(goalpose);
+
 
     std::array<double, 42> jacobian_array =
     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
@@ -379,12 +384,13 @@ namespace franka_effort_controller {
                             (2.0 * sqrt(nullspace_stiffness_)) * hdq);
 
     if (passedTime.toSec()< MessageTime.toSec()) {
-        htau_d << tau_task + tau_nullspace;
+        htau_d << tau_task;
         htau_d << saturateTorqueRate(htau_d, tau_J_d);
         tau_d << mass*(jacobian_pinv*(ddX-dJ*dq)+htau_d)+hcoriolis; 
     }
     else {
-        tau_d<< hcoriolis;       
+        tau_d << tau_task + tau_nullspace + hcoriolis;
+        tau_d << saturateTorqueRate(tau_d, tau_J_d);     
     }
  
     //for the tau_command publisher 
@@ -399,14 +405,14 @@ namespace franka_effort_controller {
      }
 
     cartesian_stiffness_ =
-      filter_params_ * cartesian_stiffness_target_ + (0.65 - filter_params_) * cartesian_stiffness_;
+      filter_params_ * cartesian_stiffness_target_ + (1 - filter_params_) * cartesian_stiffness_;
     cartesian_damping_ =
-        filter_params_ * cartesian_damping_target_ + (0.65 - filter_params_) * cartesian_damping_;
+        filter_params_ * cartesian_damping_target_ + (1 - filter_params_) * cartesian_damping_;
     nullspace_stiffness_ =
-        filter_params_ * nullspace_stiffness_target_ + (0.65 - filter_params_) * nullspace_stiffness_;
+        filter_params_ * nullspace_stiffness_target_ + (1 - filter_params_) * nullspace_stiffness_;
     std::lock_guard<std::mutex> position_d_target_mutex_lock(
         position_and_orientation_d_target_mutex_);
-    position_d_ = filter_params_ * position_d_target_ + (0.65 - filter_params_) * position_d_;
+    position_d_ = filter_params_ * position_d_target_ + (1 - filter_params_) * position_d_;
     orientation_d_ = orientation_d_.slerp(filter_params_, orientation_d_target_);
     
 
@@ -445,6 +451,22 @@ namespace franka_effort_controller {
     cartesian_damping_target_.bottomRightCorner(3, 3)
         << 2.0 * sqrt(config.rotational_stiffness) * Eigen::Matrix3d::Identity();
     nullspace_stiffness_target_ = config.nullspace_stiffness;
+    // for(int x=0;x<6;x++)  // loop 3 times for three lines
+    // {
+    //     for(int y=0;y<6;y++)  // loop for the three elements on the line
+    //     {
+    //         cout<<config.translational_stiffness
+    //     }
+    // cout<<endl;
+    // for(int x=0;x<6;x++)  // loop 3 times for three lines
+    // {
+    //     for(int y=0;y<6;y++)  // loop for the three elements on the line
+    //     {
+    //         cout<<cartesian_damping_target_[x][y];  // display the current element out of the array
+    //     }
+    // cout<<endl;
+    std::cout << config.translational_stiffness << std::endl;
+    
     }
 
     void JointImpedanceController::equilibriumPoseCallback(
